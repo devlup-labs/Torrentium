@@ -10,38 +10,39 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// DB ek global variable hai jo database connection pool ko hold karta hai.
 var DB *pgxpool.Pool
 
 func InitDB() {
-    if err := godotenv.Load(); err != nil {
-        log.Printf("Warning: No .env file found or could not load .env file: %v. Proceeding without .env variables.", err)
-    }
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: Could not load .env file: %v. Proceeding with environment variables.", err)
+	}
 
-    host := os.Getenv("DB_HOST")
-    port := os.Getenv("DB_PORT")
-    user := os.Getenv("DB_USER")
-    password := os.Getenv("DB_PASSWORD")
-    dbname := os.Getenv("DB_NAME")
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	user := os.Getenv("DB_USER")
+	password := os.Getenv("DB_PASSWORD")
+	dbname := os.Getenv("DB_NAME")
 
-    if user == "" || password == "" || host == "" || port == "" || dbname == "" {
-        log.Fatal("Error: One or more database environment variables are not set (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME). Please ensure they are set in your environment or .env file.")
-    }
+	if user == "" || password == "" || host == "" || port == "" || dbname == "" {
+		log.Fatal("Error: One or more database environment variables are not set (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME).")
+	}
 
-    dbURL := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-        user, password, host, port, dbname)
+	dbURL := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		user, password, host, port, dbname)
 
+	ctx := context.Background()
+	var err error
+	// pgxpool ka use karke naya connection pool banate hain.
+	DB, err = pgxpool.New(ctx, dbURL)
+	if err != nil {
+		log.Fatalf("Error creating DB pool: %v\n", err)
+	}
 
-    ctx := context.Background()
-    var err error
-    DB, err = pgxpool.New(ctx, dbURL)
-    if err != nil {
-        log.Fatalf("Error creating DB pool with URL '%s': %v\n", dbURL, err)
-    }
+	// Database ko ping karke connection check karte hain.
+	if err = DB.Ping(ctx); err != nil {
+		log.Fatalf("Error connecting to DB: %v\n", err)
+	}
 
-    err = DB.Ping(ctx)
-    if err != nil {
-        log.Fatalf("Error connecting to DB at URL '%s': %v\n", dbURL, err) 
-    }
-
-    log.Println("-> Successfully connected to DB")
+	log.Println("-> Successfully connected to DB")
 }

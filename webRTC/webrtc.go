@@ -1,286 +1,252 @@
 package webRTC
 
 import (
-	"encoding/base64"
+	"context"
+	"encoding/json"
 	"fmt"
-
-	"os"
-
+	"io"
+	"log"
 	"sync"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/pion/webrtc/v3"
 )
 
-// represents a WebRTC peer connection.
+//data channel pe aane wale messages ko handle karta hai
+type DataChannelMessageHandler func(webrtc.DataChannelMessage, *WebRTCPeer)
+
+
+//yeh struct ek webRTC connection aur related state ko show karta hai
 type WebRTCPeer struct {
-	connection      *webrtc.PeerConnection
-	dataChannel     *webrtc.DataChannel // The primary data channel for file transfer
-	fileWriter      *os.File            // Current file being written to (for downloads)
-	connected       bool                // Connection status
-	connectedMu     sync.RWMutex        // Mutex for connected status
-	connectionReady chan struct{}       // Channel to signal when connection is established
+	pc              *webrtc.PeerConnection
+	dataChannel     *webrtc.DataChannel
+	onMessage       DataChannelMessageHandler
+	fileWriter      io.WriteCloser
+	state           webrtc.PeerConnectionState
+	connectedSignal chan struct{}			// Jab connection successfully ban jata hai to yeh channel close ho jata hai
+	mu              sync.RWMutex			//concurrent access se protect karne ke liye
+	signalingStream network.Stream
 }
 
-// creates a new WebRTCPeer instance.
-func NewWebRTCPeer(onDataChannelMessage func(webrtc.DataChannelMessage, *WebRTCPeer)) (*WebRTCPeer, error) {
-	// STUN server for NAT traversal
+
+//ek naya webRTC peer bnata hai
+func NewWebRTCPeer(onMessage DataChannelMessageHandler) (*WebRTCPeer, error) {
 	config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
 	}
 
-	// Create a new PeerConnection
-	conn, err := webrtc.NewPeerConnection(config)
+	// Naya peer connection banate hain.
+	pc, err := webrtc.NewPeerConnection(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create PeerConnection: %w", err)
+		return nil, fmt.Errorf("failed to create peer connection: %w", err)
 	}
 
 	peer := &WebRTCPeer{
-		connection:      conn,
-		connectionReady: make(chan struct{}),
+		pc:              pc,
+		onMessage:       onMessage,
+		connectedSignal: make(chan struct{}),
 	}
 
-	// Set up handlers for ICE connection state changes
-	conn.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("ICE Connection State has changed to: %s\n", connectionState.String())
-		peer.connectedMu.Lock()
-		defer peer.connectedMu.Unlock()
-		if connectionState == webrtc.ICEConnectionStateConnected || connectionState == webrtc.ICEConnectionStateCompleted {
-			if !peer.connected {
-				peer.connected = true
-				// Close the channel to signal that connection is ready
-
-				// Only close if it hasn't been closed already
-				select {
-				case <-peer.connectionReady:
-					// Channel already closed, do nothing
-				default:
-					close(peer.connectionReady)
-				}
-			}
-		} else if connectionState == webrtc.ICEConnectionStateFailed || connectionState == webrtc.ICEConnectionStateDisconnected {
-			peer.connected = false
-			// If connection drops, prepare for potential re-establishment
-			// Re-initialize connectionReady channel
-			peer.connectionReady = make(chan struct{})
-		}
-	})
-
-	// Set up handler for signaling state changes
-	conn.OnSignalingStateChange(func(state webrtc.SignalingState) {
-		fmt.Printf("Signaling State has changed to: %s\n", state.String())
-	})
-
-	// Set up handler for incoming data channels (for the answering peer)
-	conn.OnDataChannel(func(dc *webrtc.DataChannel) {
-		fmt.Printf("New DataChannel %s (ID: %d) received!\n", dc.Label(), dc.ID())
-		peer.dataChannel = dc // Assign the incoming data channel
-
-		dc.OnOpen(func() {
-			fmt.Printf("✅ Data channel '%s' opened\n", dc.Label())
-			peer.connectedMu.Lock()
-			peer.connected = true
-			if peer.connectionReady != nil {
-				select {
-				case <-peer.connectionReady:
-					// Already closed, fine.
-				default:
-					close(peer.connectionReady) // Signal that connection is ready
-				}
-			}
-			peer.connectedMu.Unlock()
-		})
-
-		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			onDataChannelMessage(msg, peer) // Call the provided handler
-		})
-
-		dc.OnClose(func() {
-			fmt.Printf("❌ Data channel '%s' closed\n", dc.Label())
-			peer.connectedMu.Lock()
-			peer.connected = false
-			peer.connectedMu.Unlock()
-			if peer.fileWriter != nil {
-				peer.fileWriter.Close()
-				peer.fileWriter = nil
-			}
-		})
-	})
-
-	// Create a reliable data channel for the offerer. This channel will be created by the peer initiating the connection.
-	
-	// The `OnDataChannel` callback above handles the remote side when they open one.
-	ordered := true 
-	dc, err := conn.CreateDataChannel("file-transfer", &webrtc.DataChannelInit{
-		Ordered: &ordered, 
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create data channel: %w", err)
-	}
-	peer.dataChannel = dc // Assign this created data channel as the primary
-
-	dc.OnOpen(func() {
-		fmt.Printf("✅ Data channel '%s' (created by us) opened\n", dc.Label())
-		peer.connectedMu.Lock()
-		peer.connected = true
-		if peer.connectionReady != nil {
-			select {
-			case <-peer.connectionReady:
-				// Already closed, fine.
-			default:
-				close(peer.connectionReady) // Signal that connection is ready
-			}
-		}
-		peer.connectedMu.Unlock()
-	})
-
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		onDataChannelMessage(msg, peer) // Call the provided handler
-	})
-
-	dc.OnClose(func() {
-		fmt.Printf("❌ Data channel '%s' (created by us) closed\n", dc.Label())
-		peer.connectedMu.Lock()
-		peer.connected = false
-		peer.connectedMu.Unlock()
-		if peer.fileWriter != nil {
-			peer.fileWriter.Close()
-			peer.fileWriter = nil
-		}
-	})
+	//this handles change in connection states
+	pc.OnConnectionStateChange(peer.handleConnectionStateChange)
+	// Jab remote peer ek data channel kholta hai
+	pc.OnDataChannel(peer.handleDataChannel)
 
 	return peer, nil
 }
 
-// CreateOffer generates a WebRTC offer SDP.
+func (p *WebRTCPeer) handleConnectionStateChange(s webrtc.PeerConnectionState) {
+	p.mu.Lock()
+	p.state = s  // this line updates the state change
+	p.mu.Unlock()
+
+	log.Printf("Peer Connection State has changed: %s\n", s.String())
+
+	if s == webrtc.PeerConnectionStateConnected {
+		//Jab connection ban jata hai, `connectedSignal` channel ko close karte hain
+		// Yeh `WaitForConnection` mein waiting goroutine ko signal dega
+		select {
+		case <-p.connectedSignal:
+		default:
+			close(p.connectedSignal)
+		}
+	} else if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateClosed {
+		p.Close()
+	}
+}
+
+
+// handleDataChannel tab call hota hai jab remote peer ek data channel banata hai.
+func (p *WebRTCPeer) handleDataChannel(dc *webrtc.DataChannel) {
+	log.Printf("New DataChannel %q (ID: %d) received!", dc.Label(), dc.ID())
+	p.mu.Lock()
+	p.dataChannel = dc
+	p.mu.Unlock()
+
+	dc.OnOpen(func() {
+		log.Printf("Data channel '%s' (ID: %d) opened!", dc.Label(), dc.ID())
+		// The connection is now fully established
+		p.handleConnectionStateChange(webrtc.PeerConnectionStateConnected)
+	})
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		p.onMessage(msg, p)
+	})
+	dc.OnClose(func() {
+		log.Printf("Data channel '%s' (ID: %d) closed!", dc.Label(), dc.ID())
+		p.handleConnectionStateChange(webrtc.PeerConnectionStateClosed)
+	})
+}
+
+
+// CreateOffer ek offer SDP generate karta hai
 func (p *WebRTCPeer) CreateOffer() (string, error) {
-	offer, err := p.connection.CreateOffer(nil)
+	dc, err := p.pc.CreateDataChannel("data", nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create offer: %w", err)
+		return "", err
+	}
+	p.handleDataChannel(dc)
+
+	// Offer create karte hain
+	offer, err := p.pc.CreateOffer(nil)
+	if err != nil {
+		return "", err
 	}
 
-	// Create a new gathering infrastructure for the offer
-	offerGatheringComplete := webrtc.GatheringCompletePromise(p.connection)
-
-	// Set the local description and start ICE candidate gathering
-	if err = p.connection.SetLocalDescription(offer); err != nil {
-		return "", fmt.Errorf("failed to set local description for offer: %w", err)
+	//ICE gathering ka wait
+	gatherComplete := webrtc.GatheringCompletePromise(p.pc)
+	if err = p.pc.SetLocalDescription(offer); err != nil {
+		return "", err
 	}
+	<-gatherComplete  // yeh wait end ka signal karta hai
 
-	// Wait for ICE gathering to complete before returning the SDP
-
-	// Correct way to wait for a channel to close:
-	<-offerGatheringComplete
-
-	if p.connection.LocalDescription() == nil {
-		return "", fmt.Errorf("local description is nil after gathering")
-	}
-
-	return p.connection.LocalDescription().SDP, nil
+	offerJSON, err := json.Marshal(p.pc.LocalDescription())
+	return string(offerJSON), err
 }
 
-// CreateAnswer sets the remote offer and generates a WebRTC answer SDP.
+
+// CreateAnswer ek answer SDP generate karta hai.
 func (p *WebRTCPeer) CreateAnswer(offerSDP string) (string, error) {
-	offer := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeOffer,
-		SDP:  offerSDP,
+	var offer webrtc.SessionDescription
+	if err := json.Unmarshal([]byte(offerSDP), &offer); err != nil {
+		return "", err
 	}
 
-	// Set the remote description
-	if err := p.connection.SetRemoteDescription(offer); err != nil {
-		return "", fmt.Errorf("failed to set remote description for answer: %w", err)
+	if err := p.pc.SetRemoteDescription(offer); err != nil {
+		return "", err
 	}
 
-	answer, err := p.connection.CreateAnswer(nil)
+	answer, err := p.pc.CreateAnswer(nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create answer: %w", err)
+		return "", err
 	}
 
-	// Create a new gathering infrastructure for the answer
-	answerGatheringComplete := webrtc.GatheringCompletePromise(p.connection)
-
-	// Set the local description
-	if err := p.connection.SetLocalDescription(answer); err != nil {
-		return "", fmt.Errorf("failed to set local description for answer: %w", err)
+	gatherComplete := webrtc.GatheringCompletePromise(p.pc)
+	if err = p.pc.SetLocalDescription(answer); err != nil {
+		return "", err
 	}
+	<-gatherComplete
 
-	// Wait for ICE gathering to complete before returning the SDP
-
-	// Correct way to wait for a channel to close:
-	<-answerGatheringComplete
-
-	if p.connection.LocalDescription() == nil {
-		return "", fmt.Errorf("local description is nil after gathering")
-	}
-
-	return p.connection.LocalDescription().SDP, nil
+	answerJSON, err := json.Marshal(p.pc.LocalDescription())
+	return string(answerJSON), err
 }
 
-// SetAnswer sets the remote answer SDP to complete the connection.
+
+// SetAnswer remote peer se mile answer ko set karta hai.
 func (p *WebRTCPeer) SetAnswer(answerSDP string) error {
-	answer := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeAnswer,
-		SDP:  answerSDP,
+	var answer webrtc.SessionDescription
+	if err := json.Unmarshal([]byte(answerSDP), &answer); err != nil {
+		return err
+	}
+	return p.pc.SetRemoteDescription(answer)
+}
+
+
+//yeh function, specific timeout tak connection establish hone ka wait karta hai
+func (p *WebRTCPeer) WaitForConnection(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	select {
+	case <-p.connectedSignal:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("timed out waiting for connection: %w", ctx.Err())
+	}
+}
+
+
+//peer ka connection state check
+func (p *WebRTCPeer) IsConnected() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state == webrtc.PeerConnectionStateConnected
+}
+
+func (p *WebRTCPeer) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.signalingStream != nil { 
+		p.signalingStream.Close()
+		p.signalingStream = nil
 	}
 
-	// Set the remote description
-	if err := p.connection.SetRemoteDescription(answer); err != nil {
-		return fmt.Errorf("failed to set remote description for answer: %w", err)
+	if p.pc != nil && p.state != webrtc.PeerConnectionStateClosed {
+		return p.pc.Close()
 	}
 	return nil
 }
 
-//checks if the WebRTC peer is connected.
-func (p *WebRTCPeer) IsConnected() bool {
-	p.connectedMu.RLock()
-	defer p.connectedMu.RUnlock()
-	return p.connected
+func (p *WebRTCPeer) SetSignalingStream(s network.Stream) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.signalingStream = s
 }
 
-//blocks until the WebRTC connection is established or a timeout occurs.
-func (p *WebRTCPeer) WaitForConnection(timeout time.Duration) error {
-	select {
-	case <-p.connectionReady:
-		return nil
-	case <-time.After(timeout):
-		return fmt.Errorf("WebRTC connection timed out after %s", timeout)
-	}
-}
 
-//sends a command to the connected peer to request a file.
-func (p *WebRTCPeer) RequestFile(filename string) error {
+//data ko JSON mein serialize kare data channels pe bhjeta hai
+func (p *WebRTCPeer) Send(data interface{}) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if !p.IsConnected() {
-		return fmt.Errorf("not connected to a peer")
+		return fmt.Errorf("data channel not open")
 	}
-	encodedFilename := base64.StdEncoding.EncodeToString([]byte(filename))
-	// Command format: COMMAND:FILENAME_ENCODED
-	return p.SendTextData(fmt.Sprintf("REQUEST_FILE:%s", encodedFilename))
+
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return p.dataChannel.SendText(string(bytes))
 }
 
-//sends a string message over the data channel.
-func (p *WebRTCPeer) SendTextData(data string) error {
-	if p.dataChannel == nil || p.dataChannel.ReadyState() != webrtc.DataChannelStateOpen {
-		return fmt.Errorf("data channel not ready or closed")
-	}
-	return p.dataChannel.SendText(data)
-}
-
-//sends a byte slice (binary data) over the data channel.
-func (p *WebRTCPeer) SendBinaryData(data []byte) error {
-	if p.dataChannel == nil || p.dataChannel.ReadyState() != webrtc.DataChannelStateOpen {
-		return fmt.Errorf("data channel not ready or closed")
+//file data ko bytes mein data channel par bhejta hai.
+func (p *WebRTCPeer) SendRaw(data []byte) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.IsConnected() {
+		return fmt.Errorf("data channel not open")
 	}
 	return p.dataChannel.Send(data)
 }
 
-// sets the file writer for incoming file data.
-func (p *WebRTCPeer) SetFileWriter(w *os.File) {
-	p.fileWriter = w
+
+//Creates an empty file on your computer  (only called once)
+//SetFileWriter(emptyFile) to attach this empty file to the connection
+func (p *WebRTCPeer) SetFileWriter(writer io.WriteCloser) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fileWriter = writer
 }
 
-// returns the current file writer.
-func (p *WebRTCPeer) GetFileWriter() *os.File {
+
+//retrieve the attached file
+//gets called each time a chunk is sent
+func (p *WebRTCPeer) GetFileWriter() io.WriteCloser {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.fileWriter
 }
