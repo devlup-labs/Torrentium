@@ -174,11 +174,13 @@ func (r *Repository) InsertPeerFile(ctx context.Context, peerLibp2pID string, fi
 	}
 	var peerFileID uuid.UUID
 	// insert a new file or pehle se exist kar rhi hai toh woh fetch karta hai.
+	// IN CONFILCT COMMAND OF PEER ID TO MAKE SURE THAT NO ERROR OF TYPE
+	//"SQLSTATE 42P10 error" EITHER WE HAVE TO MENTION EXACT REASON OF CONFLICT OR TAKE THAT FIELD AS UNIQUE
 	query := `
         WITH ins AS (
             INSERT INTO peer_files (peer_id, file_id, announced_at)
             VALUES ($1, $2, $3)
-            ON CONFLICT (peer_id, file_id) DO NOTHING
+            ON CONFLICT (peer_id, file_id) DO NOTHING   
             RETURNING id
         )
         SELECT id FROM ins

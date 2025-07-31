@@ -12,12 +12,11 @@ import (
 	"github.com/joho/godotenv"
 )
 
-//this is thhe  entry point of the tracker related code
+// this is thhe  entry point of the tracker related code
 func main() {
-	if err := godotenv.Load(); err != nil {
+	if err := godotenv.Load("C:\\Users\\myind\\Downloads\\Torrentium\\.env.example"); err != nil {
 		log.Fatal("Unable to access .env file")
 	}
-
 
 	//db connection initialize kara
 	db.InitDB()
@@ -45,7 +44,6 @@ func main() {
 	t := tracker.NewTracker()
 	log.Println("-> Tracker Initialized")
 
-	
 	//yeh host aur tracker ko link/connect karta hai
 	//host (h) - knows how to receive connections, but it doesn't know what to do with them once they're established
 	//tracker (t) - brains of the operation. knows what to do but has no way to directly receive requests from the network
