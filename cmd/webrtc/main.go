@@ -25,6 +25,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/p2p/transport/websocket"
+
+	//"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/multiformats/go-multiaddr"
 
 	// "github.com/multiformats/go-multiaddr"
@@ -46,7 +49,7 @@ type Client struct {
 	peerName      string
 	webRTCPeers   map[peer.ID]*torrentiumWebRTC.WebRTCPeer // Active WebRTC connections ka map
 	peersMux      sync.RWMutex
-	sharingFiles map[uuid.UUID]string
+	sharingFiles  map[uuid.UUID]string
 }
 
 // entry point for the webRTC peer code
@@ -55,10 +58,34 @@ func main() {
 		log.Fatal("Unable to access .env file:", err)
 	}
 
-	h, err := libp2p.New()
+	relayAddr, err := multiaddr.NewMultiaddr("/ip4/147.75.80.110/tcp/4001/p2p/12D3KooWDRpc3soSgM2s2gN7b3j75s62hS4F84vL2sX3M3Qk8i5P")
+	if err != nil {
+		log.Fatal("Failed to parse relay multi address: %v", err)
+	}
+
+	relayAddrInfo, err := peer.AddrInfoFromP2pAddr(relayAddr)
+	if err != nil {
+		log.Fatal("Failed to get AddrInfo from realy multiaddr: %v", err)
+	}
+
+	h, err := libp2p.New(
+		libp2p.EnableRelay(),
+		libp2p.Transport(websocket.New),
+		libp2p.EnableHolePunching(),
+		libp2p.ForceReachabilityPrivate(),
+	)
+
 	if err != nil {
 		log.Fatal("Failed to create libp2p host:", err)
 	}
+
+	err = h.Connect(context.Background(), *relayAddrInfo)
+	if err != nil {
+		log.Printf("Failed to connect to public relay, continuing...: %v", err)
+	} else {
+		log.Println("sucessfully connected to public relay")
+	}
+
 	log.Printf("Peer libp2p Host ID: %s", h.ID())
 
 	setupGracefulShutdown(h)
@@ -74,6 +101,16 @@ func main() {
 		log.Fatal("Invalid TRACKER_ADDR in .env file:", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+
+	err = h.Connect(ctx, *trackerAddrInfo)
+	if err != nil {
+		log.Printf("Failed to connect to tracker/relay, continuing...: %v", err)
+	} else {
+		log.Println("Successfully connected to tracker(relay).")
+	}
+
 	client := NewClient(h)
 	// WebRTC offers ko handle karne ke liye signaling protocol register kra hain.
 	p2p.RegisterSignalingProtocol(h, client.handleWebRTCOffer)
@@ -86,15 +123,13 @@ func main() {
 	client.commandLoop()
 }
 
-
 func NewClient(h host.Host) *Client {
 	return &Client{
-		host:        h,
-		webRTCPeers: make(map[peer.ID]*torrentiumWebRTC.WebRTCPeer),
+		host:         h,
+		webRTCPeers:  make(map[peer.ID]*torrentiumWebRTC.WebRTCPeer),
 		sharingFiles: make(map[uuid.UUID]string),
 	}
 }
-
 
 // yeh function trackerr se connection bnata hai aur handshake perform karta hai
 func (c *Client) connectToTracker(trackerAddr peer.AddrInfo) error {
@@ -151,8 +186,6 @@ func (c *Client) connectToTracker(trackerAddr peer.AddrInfo) error {
 	return nil
 }
 
-
-
 // traker se online peers ki list request karta hai
 func (c *Client) listPeers() error {
 	if err := c.encoder.Encode(p2p.Message{Command: "LIST_PEERS"}); err != nil {
@@ -189,7 +222,6 @@ func (c *Client) listPeers() error {
 	}
 	return nil
 }
-
 
 // commandLoop user se input leta hai aur uske hisab se actions perform karta hai, jab tak connection close nhi ho jata
 func (c *Client) commandLoop() {
@@ -236,8 +268,6 @@ func (c *Client) commandLoop() {
 		}
 	}
 }
-
-
 
 // ek local file ko tracker par announce karta hai
 func (c *Client) addFile(filePath string) error {
@@ -294,8 +324,6 @@ func (c *Client) addFile(filePath string) error {
 	return nil
 }
 
-
-
 // listFiles tracker par available sabhi files ki list get karta hai.
 func (c *Client) listFiles() error {
 	if err := c.encoder.Encode(p2p.Message{Command: "LIST_FILES"}); err != nil {
@@ -326,8 +354,6 @@ func (c *Client) listFiles() error {
 	fmt.Println("--------------------")
 	return nil
 }
-
-
 
 // get function ek file ko download karne ka process shuru karta hai.
 func (c *Client) get(fileIDStr string, outputPath string) error {
@@ -436,8 +462,6 @@ func (c *Client) get(fileIDStr string, outputPath string) error {
 	return nil
 }
 
-
-
 // WebRTC offer/answer exchange process ko handle karta hai
 func (c *Client) initiateWebRTCConnection(targetPeerID peer.ID) (*torrentiumWebRTC.WebRTCPeer, error) {
 	//signaling ke liye target peer ke saath ek naya stream kholte hai(isse shayad libp2p pe shift karna hai)
@@ -453,7 +477,6 @@ func (c *Client) initiateWebRTCConnection(targetPeerID peer.ID) (*torrentiumWebR
 	}
 
 	webRTCPeer.SetSignalingStream(s)
-
 
 	// Offer create karke signaling stream par bhejte hain
 	offer, err := webRTCPeer.CreateOffer()
@@ -484,8 +507,6 @@ func (c *Client) initiateWebRTCConnection(targetPeerID peer.ID) (*torrentiumWebR
 	return webRTCPeer, nil
 }
 
-
-
 // fellow peer se aaye WebRTC offer ko handle karta hai
 func (c *Client) handleWebRTCOffer(offer, remotePeerIDStr string, s network.Stream) (string, error) {
 	remotePeerID, err := peer.Decode(remotePeerIDStr)
@@ -501,7 +522,6 @@ func (c *Client) handleWebRTCOffer(offer, remotePeerIDStr string, s network.Stre
 
 	webRTCPeer.SetSignalingStream(s)
 
-
 	answer, err := webRTCPeer.CreateAnswer(offer)
 	if err != nil {
 		webRTCPeer.Close()
@@ -513,11 +533,9 @@ func (c *Client) handleWebRTCOffer(offer, remotePeerIDStr string, s network.Stre
 	return answer, nil
 }
 
-
-
 // WebRTC data channel par aaye messages ko process karta hai
 func (c *Client) onDataChannelMessage(msg webrtc.DataChannelMessage, p *torrentiumWebRTC.WebRTCPeer) {
-	
+
 	if msg.IsString {
 		var message map[string]string
 		if err := json.Unmarshal(msg.Data, &message); err != nil {
@@ -558,7 +576,6 @@ func (c *Client) onDataChannelMessage(msg webrtc.DataChannelMessage, p *torrenti
 	}
 }
 
-
 func (c *Client) sendFile(p *torrentiumWebRTC.WebRTCPeer, fileID uuid.UUID) {
 	log.Printf("Processing request to send file with ID: %s", fileID)
 
@@ -578,7 +595,7 @@ func (c *Client) sendFile(p *torrentiumWebRTC.WebRTCPeer, fileID uuid.UUID) {
 	defer file.Close()
 
 	log.Printf("Starting file transfer for %s", filepath.Base(filePath))
-	buffer := make([]byte, 16*1024) // 16KB chunks
+	buffer := make([]byte, 64*1024) // 16KB chunks
 	for {
 		bytesRead, err := file.Read(buffer)
 		if err != nil {
@@ -598,15 +615,12 @@ func (c *Client) sendFile(p *torrentiumWebRTC.WebRTCPeer, fileID uuid.UUID) {
 	p.Send(map[string]string{"status": "TRANSFER_COMPLETE"})
 }
 
-
 // ek naye WebRTC peer ko thread-safe tarike se map mein add karta hai (race condition avoid karne ke liye)
 func (c *Client) addWebRTCPeer(id peer.ID, p *torrentiumWebRTC.WebRTCPeer) {
 	c.peersMux.Lock()
 	defer c.peersMux.Unlock()
 	c.webRTCPeers[id] = p
 }
-
-
 
 // Ctrl+C jaise signals ko handle karta hai taaki program theek se band ho
 func setupGracefulShutdown(h host.Host) {

@@ -10,6 +10,7 @@ import (
 	"torrentium/tracker"
 
 	"github.com/joho/godotenv"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 )
 
 //this is thhe  entry point of the tracker related code
@@ -40,6 +41,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	_, err = relay.New(h, relay.WithResources(relay.DefaultResources()))
+	if err != nil {
+		log.Fatalf("Failed to initiate relay: %v", err)
+	}
+
+	log.Println("-> Tracker Initialized as a Relay")
 
 	// Naya tracker instance banate hai
 	t := tracker.NewTracker()

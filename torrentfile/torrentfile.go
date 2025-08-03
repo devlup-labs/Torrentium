@@ -10,12 +10,12 @@ import (
 	bencode "github.com/jackpal/bencode-go"
 )
 
-//yeh struct .torrentl file ka metadata define karta hai.Bencode format mein encode hota hai.
+//yeh struct .torrent file ka metadata define karta hai.Bencode format mein encode hota hai.
 type TorrentMeta struct {
 	Filename  string    `bencode:"filename"`
 	Length    int64     `bencode:"length"`
 	Hash      string    `bencode:"hash"`
-	CreatedAt int64 `bencode:"created_at"`
+	CreatedAt int64 	`bencode:"created_at"`
 }
 
 

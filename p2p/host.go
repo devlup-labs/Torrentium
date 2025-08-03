@@ -11,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -35,6 +36,9 @@ func NewHost(ctx context.Context, listenAddr string) (host.Host, error) {
 		//private key se host ki identity in the network create ho rhi hai
 		libp2p.Identity(priv),
 		libp2p.ListenAddrs(maddr),
+		libp2p.Transport(websocket.New),
+		libp2p.EnableRelay(),
+		libp2p.EnableHolePunching(),
 	)
 	if err != nil {
 		return nil, err
