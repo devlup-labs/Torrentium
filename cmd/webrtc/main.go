@@ -41,12 +41,15 @@ import (
 type Client struct {
 	host          host.Host
 	trackerStream network.Stream // Tracker ke saath communication stream
-	encoder       *json.Encoder
-	decoder       *json.Decoder
-	peerName      string
-	webRTCPeers   map[peer.ID]*torrentiumWebRTC.WebRTCPeer // Active WebRTC connections ka map
-	peersMux      sync.RWMutex
-	sharingFiles  map[uuid.UUID]string
+	//Your libp2p trackerStream connects to a central signaling tracker, which coordinates peer discovery.
+	encoder     *json.Encoder // used to handle json requests
+	decoder     *json.Decoder
+	peerName    string
+	webRTCPeers map[peer.ID]*torrentiumWebRTC.WebRTCPeer // Active WebRTC connections ka map
+	//This map stores all active WebRTC connections your client has with other peers.
+	// It allows your app to quickly find and communicate with any connected peer.
+	peersMux     sync.RWMutex
+	sharingFiles map[uuid.UUID]string
 }
 
 // entry point for the webRTC peer code
