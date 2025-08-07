@@ -35,7 +35,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Println("-> Tracker Initialized")
+	// log.Println("-> Tracker Initialized")
 
 	t := tracker.NewTracker()
 	log.Println("-> Tracker Initialized")

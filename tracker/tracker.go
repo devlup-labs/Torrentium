@@ -77,7 +77,6 @@ func (t *Tracker) AddFileWithPeer(ctx context.Context, fileHash, filename string
 	if err != nil {
 		return uuid.Nil, err
 	}
-
 	return fileID, nil
 }
 
