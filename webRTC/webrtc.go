@@ -31,7 +31,6 @@ func NewWebRTCPeer(onMessage DataChannelMessageHandler) (*WebRTCPeer, error) {
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 			{URLs: []string{"stun:stun1.l.google.com:19302"}},
-			{URLs: []string{"stun:stun2.l.google.com:19302"}},
 		},
 	}
 
@@ -57,7 +56,7 @@ func (p *WebRTCPeer) handleConnectionStateChange(s webrtc.PeerConnectionState) {
 	p.state = s
 	p.mu.Unlock()
 
-	log.Printf("Peer Connection State has changed: %s\n", s.String())
+	log.Printf("Peer Connection State: %s\n", s.String())
 
 	if s == webrtc.PeerConnectionStateConnected {
 		select {
@@ -71,20 +70,20 @@ func (p *WebRTCPeer) handleConnectionStateChange(s webrtc.PeerConnectionState) {
 }
 
 func (p *WebRTCPeer) handleDataChannel(dc *webrtc.DataChannel) {
-	log.Printf("New DataChannel %q (ID: %d) received!", dc.Label(), dc.ID())
+	log.Printf("New DataChannel '%s' (%d)\n", dc.Label(), dc.ID())
 	p.mu.Lock()
 	p.dataChannel = dc
 	p.mu.Unlock()
 
 	dc.OnOpen(func() {
-		log.Printf("Data channel '%s' (ID: %d) opened!", dc.Label(), dc.ID())
+		log.Printf("Data channel '%s' (%d) opened.\n", dc.Label(), dc.ID())
 		p.handleConnectionStateChange(webrtc.PeerConnectionStateConnected)
 	})
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		p.onMessage(msg, p)
 	})
 	dc.OnClose(func() {
-		log.Printf("Data channel '%s' (ID: %d) closed!", dc.Label(), dc.ID())
+		log.Printf("Data channel '%s' (%d) closed.\n", dc.Label(), dc.ID())
 		p.handleConnectionStateChange(webrtc.PeerConnectionStateClosed)
 	})
 }
@@ -152,7 +151,7 @@ func (p *WebRTCPeer) WaitForConnection(timeout time.Duration) error {
 	case <-p.connectedSignal:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("timed out waiting for connection: %w", ctx.Err())
+		return fmt.Errorf("timed out waiting for connection")
 	}
 }
 
@@ -180,7 +179,6 @@ func (p *WebRTCPeer) Close() error {
 func (p *WebRTCPeer) SetSignalingStream(s network.Stream) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	p.signalingStream = s
 }
 

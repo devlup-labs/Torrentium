@@ -14,7 +14,6 @@ const SignalingProtocolID = "/torrentium/webrtc-signaling/1.0"
 func RegisterSignalingProtocol(h host.Host, onOffer func(offer, remotePeerID string, s network.Stream) (string, error)) {
 	h.SetStreamHandler(SignalingProtocolID, func(s network.Stream) {
 		log.Printf("Received incoming signaling connection from %s", s.Conn().RemotePeer())
-
 		decoder := json.NewDecoder(s)
 		encoder := json.NewEncoder(s)
 
@@ -33,7 +32,7 @@ func RegisterSignalingProtocol(h host.Host, onOffer func(offer, remotePeerID str
 			return
 		}
 
-		if err := encoder.Encode(&answer); err != nil {
+		if err := encoder.Encode(answer); err != nil {
 			log.Printf("Error encoding answer: %v", err)
 			s.Reset()
 		}

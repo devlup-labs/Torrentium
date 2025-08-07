@@ -43,8 +43,7 @@ func (r *Repository) UpsertPeer(ctx context.Context, peerID, name string, multia
 		insertPeerQuery := `
             INSERT INTO peers (peer_id, name, multiaddrs, is_online, last_seen, created_at)
             VALUES ($1, $2, $3, true, $4, $4)
-            RETURNING id
-        `
+            RETURNING id`
 		insertErr := tx.QueryRow(ctx, insertPeerQuery, peerID, name, multiaddrs, now).Scan(&peerUUID)
 		if insertErr != nil {
 			return uuid.Nil, fmt.Errorf("failed to insert new peer: %w", insertErr)
@@ -154,11 +153,10 @@ func (r *Repository) InsertPeerFile(ctx context.Context, peerLibp2pID string, fi
         )
         SELECT id FROM ins
         UNION ALL
-        SELECT id FROM peer_files WHERE peer_id = $1 AND file_id = $2 AND NOT EXISTS (SELECT 1 FROM ins)
-    `
+        SELECT id FROM peer_files WHERE peer_id = $1 AND file_id = $2 AND NOT EXISTS (SELECT 1 FROM ins)`
 	err = r.DB.QueryRow(ctx, query, peerUUID, fileID, time.Now()).Scan(&peerFileID)
 	if err != nil {
-		log.Printf("[Repository] InsertPeerFile error for peerUUID %s and fileID %s: %v", peerUUID, fileID, err)
+		log.Printf("InsertPeerFile error for peerUUID %s and fileID %s: %v", peerUUID, fileID, err)
 		return uuid.Nil, err
 	}
 
@@ -171,8 +169,7 @@ func (r *Repository) FindOnlineFilePeersByID(ctx context.Context, fileID uuid.UU
         FROM peer_files pf
         JOIN peers p ON pf.peer_id = p.id
         LEFT JOIN trust_scores ts ON p.id = ts.peer_id
-        WHERE pf.file_id = $1 AND p.is_online = true
-    `
+        WHERE pf.file_id = $1 AND p.is_online = true`
 	rows, err := r.DB.Query(ctx, query, fileID)
 	if err != nil {
 		return nil, err
