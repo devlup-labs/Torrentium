@@ -5,6 +5,7 @@ go 1.23.10
 toolchain go1.24.4
 
 require (
+
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/pion/webrtc/v3 v3.2.40
 )
@@ -28,6 +29,11 @@ require (
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	gonum.org/v1/gonum v0.16.0 // indirect
+
+	github.com/gorilla/mux v1.8.1
+	github.com/pion/webrtc/v3 v3.2.40
+	github.com/rs/cors v1.11.1
+
 )
 
 require (
@@ -41,7 +47,7 @@ require (
 	github.com/francoispqt/gojay v1.2.13 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/gorilla/websocket v1.5.3
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/ipfs/go-cid v0.5.0
 	github.com/ipfs/go-log/v2 v2.8.0 // indirect
