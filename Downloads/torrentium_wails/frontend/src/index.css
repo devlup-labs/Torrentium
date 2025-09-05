@@ -1,0 +1,82 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Inter', system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: dark;
+  color: #ffffff;
+  background-color: #001b52;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #001b52;
+  color: #ffffff;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000938;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #b4c5f9;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9bb4f7;
+}
+
+/* Drag and drop styles */
+.drag-over {
+  border-color: #b4c5f9;
+  background-color: rgba(180, 197, 249, 0.1);
+}
+
+/* Progress bar animations */
+@keyframes progress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(0%); }
+}
+
+.progress-bar {
+  animation: progress 0.3s ease-out;
+}
+
+/* Toast animations */
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.toast-enter {
+  animation: slideIn 0.3s ease-out;
+}
