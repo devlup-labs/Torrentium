@@ -50,6 +50,8 @@ const (
 	MaxDelay               = 100 * time.Millisecond
 	ExponentialBackoffBase = 1 * time.Second
 	MaxBackoff             = 32 * time.Second
+	// Trust score settings
+	SendTrustScoreImmediately = true // Send trust score updates immediately after each piece
 )
 
 type Client struct {
@@ -67,6 +69,25 @@ type Client struct {
 	pingTimes        map[peer.ID]time.Time
 	rttMeasurements  map[peer.ID][]time.Duration
 	rttMux           sync.Mutex
+	// Trust score related fields
+	providerTrustScores map[string]float64
+	trustScoreMux       sync.RWMutex
+	// Transaction tracking
+	transactionTrackers map[string]*TransactionTracker
+	trackerMux          sync.RWMutex
+}
+
+// TransactionTracker tracks metrics for each peer during downloads
+type TransactionTracker struct {
+	PeerID             string
+	StartTime          time.Time
+	ChunksReceived     int
+	SuccessfulChunks   int
+	TotalDataReceived  int64
+	AverageUploadSpeed int // Moving average
+	TransferSuccessful bool
+	ChunkSpeeds        []int       // Speed for each chunk received
+	ChunkStartTimes    []time.Time // Start time for each chunk
 }
 
 type FileInfo struct {
@@ -92,6 +113,21 @@ type controlMessage struct {
 	TotalChunks int        `json:"total_chunks,omitempty"`
 	Payload     string     `json:"payload,omitempty"`
 	Sequence    int        `json:"sequence,omitempty"`
+	// Trust score fields
+	TrustScore float64 `json:"trust_score,omitempty"`
+	PeerID     string  `json:"peer_id,omitempty"`
+	// Trust score update parameters
+	TrustScoreUpdate *TrustScoreUpdateParams `json:"trust_score_update,omitempty"`
+}
+
+// TrustScoreUpdateParams contains data needed for seeder to calculate trust score
+type TrustScoreUpdateParams struct {
+	LeecherPeerID      string `json:"leecher_peer_id"`
+	ChunksReceived     int    `json:"chunks_received"`     // #12: from current transaction
+	SuccessfulChunks   int    `json:"successful_chunks"`   // #13: from current transaction
+	TotalDataReceived  int64  `json:"total_data_received"` // #14: from current transaction (file size for #2)
+	AverageChunkSpeed  int    `json:"average_chunk_speed"` // #5: average speed for chunks assigned to this seeder
+	TransferSuccessful bool   `json:"transfer_successful"` // #15: yes/no parameter
 }
 
 type DownloadState struct {
@@ -128,16 +164,18 @@ func setupGracefulShutdown(h host.Host) {
 
 func NewClient(h host.Host, d *dht.IpfsDHT, repo *db.Repository) *Client {
 	c := &Client{
-		host:            h,
-		dht:             d,
-		webRTCPeers:     make(map[peer.ID]*webRTC.SimpleWebRTCPeer),
-		sharingFiles:    make(map[string]*FileInfo),
-		activeDownloads: make(map[string]*DownloadState),
-		db:              repo,
-		unackedChunks:   make(map[string]map[int64]map[int]controlMessage),
-		congestionCtrl:  make(map[peer.ID]time.Duration),
-		pingTimes:       make(map[peer.ID]time.Time),
-		rttMeasurements: make(map[peer.ID][]time.Duration),
+		host:                h,
+		dht:                 d,
+		webRTCPeers:         make(map[peer.ID]*webRTC.SimpleWebRTCPeer),
+		sharingFiles:        make(map[string]*FileInfo),
+		activeDownloads:     make(map[string]*DownloadState),
+		db:                  repo,
+		unackedChunks:       make(map[string]map[int64]map[int]controlMessage),
+		congestionCtrl:      make(map[peer.ID]time.Duration),
+		pingTimes:           make(map[peer.ID]time.Time),
+		rttMeasurements:     make(map[peer.ID][]time.Duration),
+		providerTrustScores: make(map[string]float64),
+		transactionTrackers: make(map[string]*TransactionTracker),
 	}
 	go c.monitorCongestion()
 	return c
@@ -178,6 +216,9 @@ func main() {
 	client := NewClient(h, d, repo)
 	client.startDHTMaintenance()
 	p2p.RegisterSignalingProtocol(h, client.handleWebRTCOffer)
+
+	// Register trust score protocol handler
+	client.registerTrustScoreProtocol()
 
 	client.commandLoop()
 }
@@ -247,6 +288,8 @@ func (c *Client) commandLoop() {
 			c.performLocalWebRTCTest()
 		case "debug":
 			c.debugNetworkStatus()
+		case "trustscore":
+			c.checkMyTrustScore()
 		case "exit":
 			return
 		default:
@@ -272,6 +315,7 @@ func (c *Client) printInstructions() {
 	fmt.Println(" nettest              - Perform comprehensive network diagnostics")
 	fmt.Println(" localtest            - Test local WebRTC functionality")
 	fmt.Println(" debug                - Show detailed network debug info")
+	fmt.Println(" trustscore           - Check your current trust score and metrics")
 	fmt.Println(" help                 - Show this help")
 	fmt.Println(" exit                 - Exit the application")
 	fmt.Printf("\nYour Peer ID: %s\n", c.host.ID())
@@ -695,7 +739,7 @@ func (c *Client) downloadFile(cidStr string) error {
 	}
 
 	fmt.Printf("Found %d providers. Getting file manifest...\n", len(providers))
-	relayAddrStr := "/dns4/relay-torrentium.onrender.com/tcp/443/wss/p2p/12D3KooWKsLZ7VmZTq7qBHj2cv4DczbEoNFLLDaLLk9ADVxDnqS6"
+	relayAddrStr := "/dns4/relay-torrentium-nnyw.onrender.com/tcp/443/wss/p2p/12D3KooWHs4BxfNGuKmQMixupzFrsX9zLXnSrGPvZM3DCMvjTA6j"
 
 	var manifest controlMessage
 	var firstPeer *webRTC.SimpleWebRTCPeer
@@ -786,18 +830,39 @@ func (c *Client) downloadFile(cidStr string) error {
 
 	// Parallel downloads
 	var wg sync.WaitGroup
+
+	// First, request trust scores from all providers
+	fmt.Println("Requesting trust scores from providers...")
+	err = c.requestTrustScoresFromProviders(providers, relayAddrStr)
+	if err != nil {
+		log.Printf("Warning: Failed to get some trust scores: %v", err)
+	}
+
+	// Calculate weighted piece distribution based on trust scores
+	pieceDistribution := c.calculateWeightedPieceDistribution(providers, state.TotalPieces)
+
+	fmt.Printf("Trust-based piece distribution:\n")
+	for i, dist := range pieceDistribution {
+		if i < len(providers) {
+			peerID := providers[i].ID.String()[:8]
+			c.trustScoreMux.RLock()
+			trustScore := c.providerTrustScores[providers[i].ID.String()]
+			c.trustScoreMux.RUnlock()
+			fmt.Printf("  Peer %s (trust: %.3f): pieces %d-%d (%d pieces)\n",
+				peerID, trustScore, dist.Start, dist.End-1, dist.End-dist.Start)
+		}
+	}
+
 	peersToUse := providers
 	if len(peersToUse) > MaxParallelDownloads {
 		peersToUse = peersToUse[:MaxParallelDownloads]
+		pieceDistribution = pieceDistribution[:MaxParallelDownloads]
 	}
-	chunksPerPeer := state.TotalPieces / len(peersToUse)
 
 	for i, p := range peersToUse {
-		start := i * chunksPerPeer
-		end := start + chunksPerPeer
-		if i == len(peersToUse)-1 {
-			end = state.TotalPieces
-		}
+		dist := pieceDistribution[i]
+		start := dist.Start
+		end := dist.End
 
 		wg.Add(1)
 		go func(peerInfo peer.AddrInfo, startPiece, endPiece int) {
@@ -825,11 +890,28 @@ func (c *Client) downloadFile(cidStr string) error {
 		return fmt.Errorf("failed to rename file: %w", err)
 	}
 
-	fmt.Printf("\n✅ Download complete. File saved as %s\n", finalPath)
+	fmt.Printf("\nDownload complete. File saved as %s\n", finalPath)
 	return nil
 }
 
 func (c *Client) downloadChunksFromPeer(peer *webRTC.SimpleWebRTCPeer, state *DownloadState, startPiece, endPiece int) {
+	peerID := peer.GetSignalingStream().Conn().RemotePeer().String()
+
+	// Initialize transaction tracker for this peer
+	c.trackerMux.Lock()
+	c.transactionTrackers[peerID] = &TransactionTracker{
+		PeerID:             peerID,
+		StartTime:          time.Now(),
+		ChunksReceived:     0,
+		SuccessfulChunks:   0,
+		TotalDataReceived:  0,
+		AverageUploadSpeed: 0,
+		TransferSuccessful: true, // Will be set to false if any piece fails
+		ChunkSpeeds:        make([]int, 0),
+		ChunkStartTimes:    make([]time.Time, 0),
+	}
+	c.trackerMux.Unlock()
+
 	for i := startPiece; i < endPiece; i++ {
 		state.mu.Lock()
 		if state.PieceStatus[i] {
@@ -855,6 +937,12 @@ func (c *Client) downloadChunksFromPeer(peer *webRTC.SimpleWebRTCPeer, state *Do
 
 		if err := peer.SendJSONReliable(req); err != nil {
 			log.Printf("Failed to request piece %d from %s: %v", i, peer.GetSignalingStream().Conn().RemotePeer(), err)
+			// Mark transaction as failed
+			c.trackerMux.Lock()
+			if tracker, exists := c.transactionTrackers[peerID]; exists {
+				tracker.TransferSuccessful = false
+			}
+			c.trackerMux.Unlock()
 			return
 		}
 	}
@@ -1120,6 +1208,12 @@ func (c *Client) handleControlMessage(ctrl controlMessage, peer *webRTC.SimpleWe
 		c.handlePieceChunk(ctrl, peer)
 	case "CHUNK_ACK":
 		c.handleChunkAck(ctrl)
+	case "REQUEST_TRUST_SCORE":
+		c.handleTrustScoreRequest(ctx, ctrl, peer)
+	case "TRUST_SCORE_RESPONSE":
+		c.handleTrustScoreResponse(ctrl, peer)
+	case "UPDATE_TRUST_SCORE":
+		c.handleTrustScoreUpdate(ctx, ctrl, peer)
 	default:
 		// log.Printf("Unknown control command: %s", ctrl.Command)
 	}
@@ -1164,6 +1258,37 @@ func (c *Client) handlePieceChunk(ctrl controlMessage, peer *webRTC.SimpleWebRTC
 	state.pieceBuffers[int(ctrl.Index)][ctrl.ChunkIndex] = chunkData
 	_ = state.Progress.Add(len(chunkData))
 
+	// Track chunk metrics
+	peerID := peer.GetSignalingStream().Conn().RemotePeer().String()
+	c.trackerMux.Lock()
+	if tracker, exists := c.transactionTrackers[peerID]; exists {
+		// Record chunk start time (this is an approximation since we don't track request time per chunk)
+		chunkStartTime := time.Now()
+		tracker.ChunkStartTimes = append(tracker.ChunkStartTimes, chunkStartTime)
+
+		tracker.ChunksReceived++
+		tracker.SuccessfulChunks++
+		tracker.TotalDataReceived += int64(len(chunkData))
+
+		// Calculate current chunk speed (bytes/second for this chunk)
+		// Since we don't track exact request time, use elapsed time since tracker start
+		elapsed := time.Since(tracker.StartTime).Seconds()
+		if elapsed > 0 && tracker.ChunksReceived > 0 {
+			// Calculate average speed for all chunks so far
+			avgChunkSpeed := int(float64(tracker.TotalDataReceived) / elapsed)
+			tracker.ChunkSpeeds = append(tracker.ChunkSpeeds, avgChunkSpeed)
+
+			// Update moving average
+			if tracker.AverageUploadSpeed == 0 {
+				tracker.AverageUploadSpeed = avgChunkSpeed
+			} else {
+				// Moving average
+				tracker.AverageUploadSpeed = (tracker.AverageUploadSpeed + avgChunkSpeed) / 2
+			}
+		}
+	}
+	c.trackerMux.Unlock()
+
 	// Check if piece is complete
 	isComplete := true
 	var pieceSize int
@@ -1207,6 +1332,9 @@ func (c *Client) handlePieceChunk(ctrl controlMessage, peer *webRTC.SimpleWebRTC
 		state.PieceStatus[ctrl.Index] = true
 		state.completedPieces++
 		delete(state.pieceBuffers, int(ctrl.Index))
+
+		// Send trust score update immediately while WebRTC connection is still active
+		c.sendTrustScoreUpdate(peer, int(ctrl.Index), state)
 
 		if state.completedPieces == state.TotalPieces {
 			state.Completed <- true
@@ -1416,4 +1544,671 @@ func (c *Client) handlePong(pid peer.ID) {
 		c.rttMux.Unlock()
 		delete(c.pingTimes, pid)
 	}
+}
+
+// handleTrustScoreRequest handles a request for trust score with decay applied
+func (c *Client) handleTrustScoreRequest(ctx context.Context, ctrl controlMessage, peer *webRTC.SimpleWebRTCPeer) {
+	// Get current trust score data for MYSELF (the seeder), not the requesting peer
+	myPeerID := c.host.ID().String()
+	peerData, err := c.db.GetPeerTrustScore(ctx, myPeerID)
+	if err != nil {
+		log.Printf("Error getting my own trust score: %v", err)
+		return
+	}
+
+	// Update my last seen time since I'm actively responding (no decay needed for active peers)
+	peerData.LastSeen = time.Now()
+	err = c.db.UpdatePeerTrustScore(ctx, peerData)
+	if err != nil {
+		log.Printf("Error updating my last seen time: %v", err)
+	}
+
+	// Send back MY current trust score (no decay applied since I'm active)
+	response := controlMessage{
+		Command:    "TRUST_SCORE_RESPONSE",
+		PeerID:     myPeerID, // Send my own peer ID
+		TrustScore: peerData.CurrentTrustScore,
+	}
+
+	log.Printf("Sending my trust score %.3f to requesting peer %s", peerData.CurrentTrustScore, peer.GetSignalingStream().Conn().RemotePeer().String()[:8])
+	peer.SendJSONReliable(response)
+}
+
+// handleTrustScoreResponse handles a trust score response
+func (c *Client) handleTrustScoreResponse(ctrl controlMessage, peer *webRTC.SimpleWebRTCPeer) {
+	// Store the received trust score for provider prioritization
+	c.trustScoreMux.Lock()
+	if c.providerTrustScores == nil {
+		c.providerTrustScores = make(map[string]float64)
+	}
+	c.providerTrustScores[ctrl.PeerID] = ctrl.TrustScore
+	c.trustScoreMux.Unlock()
+
+	log.Printf("Received trust score %.3f for peer %s", ctrl.TrustScore, ctrl.PeerID[:8])
+}
+
+// handleTrustScoreUpdate processes trust score update from leecher and calculates new trust score
+func (c *Client) handleTrustScoreUpdate(ctx context.Context, ctrl controlMessage, peer *webRTC.SimpleWebRTCPeer) {
+	if ctrl.TrustScoreUpdate == nil {
+		log.Printf("Received trust score update with no parameters")
+		return
+	}
+
+	params := ctrl.TrustScoreUpdate
+	log.Printf("Received trust score update from leecher %s: %d chunks, %.2f MB, transfer success: %v",
+		params.LeecherPeerID[:8], params.ChunksReceived,
+		float64(params.TotalDataReceived)/(1024*1024), params.TransferSuccessful)
+
+	// Get current peer trust data for the SEEDER (myself) from seeder's database
+	peerData, err := c.db.GetPeerTrustScore(ctx, c.host.ID().String())
+	if err != nil {
+		log.Printf("Error getting seeder's own trust data for update: %v", err)
+		return
+	}
+
+	// Update metrics based on specifications:
+
+	// #9: Add 1 to total transfers in seeder DB
+	peerData.TotalTransfers++
+
+	// #8: If all chunks were shared successfully, add 1 to successful transfers
+	if params.TransferSuccessful {
+		peerData.SuccessfulTransfers++
+	}
+
+	// #2: Since we're the seeder, when leecher downloads from us, we increment our SeededData
+	peerData.SeededData += float64(params.TotalDataReceived) / (1024 * 1024) // Convert to MB
+
+	// #3: We don't update LeechedData since we're seeding, not leeching
+
+	// #11: Number of successful chunks shared (same as #10)
+	// #10: Add number of chunks just shared
+	log.Printf("Debug: Before update - NoOfSuccChunksLastK=%d, adding %d",
+		peerData.NoOfSuccChunksLastK, params.SuccessfulChunks)
+	peerData.NoOfSuccChunksLastK += params.SuccessfulChunks // Accumulate successful chunks
+	log.Printf("Debug: After update - NoOfSuccChunksLastK=%d", peerData.NoOfSuccChunksLastK)
+	peerData.TotalFileChunksUploaded += params.ChunksReceived // Add total chunks received by leecher
+	peerData.OriginalChunksShared += params.ChunksReceived    // Add chunks shared in this transaction
+
+	// #5: Update average upload speed with 25:1 weighting
+	if peerData.AverageUploadSpeed == 0 {
+		peerData.AverageUploadSpeed = params.AverageChunkSpeed
+	} else {
+		peerData.AverageUploadSpeed = int((float64(peerData.AverageUploadSpeed)*25.0 + float64(params.AverageChunkSpeed)*1.0) / 26.0)
+	}
+
+	// #6: Set average online time to 8 hours
+	peerData.AverageOnlineTimePerDay = 8
+
+	// #4: Update last seen to present time
+	peerData.LastSeen = time.Now()
+
+	// Store old trust score before updating
+	oldTrustScore := peerData.CurrentTrustScore
+
+	// Calculate new trust score
+	newTrustScore := c.db.CalculateTrustScore(peerData.CurrentTrustScore, peerData, params.TransferSuccessful)
+
+	// Debug logging
+	log.Printf("Debug: oldTrustScore=%.3f, newTrustScore=%.3f, chunks=%d, successful=%v",
+		oldTrustScore, newTrustScore, params.ChunksReceived, params.TransferSuccessful)
+
+	peerData.CurrentTrustScore = newTrustScore
+
+	// Update in seeder's database
+	err = c.db.UpdatePeerTrustScore(ctx, peerData)
+	if err != nil {
+		log.Printf("Error updating peer trust score in seeder DB: %v", err)
+		return
+	}
+
+	log.Printf("Seeder updated its own trust score based on leecher %s feedback: %.3f -> %.3f",
+		params.LeecherPeerID[:8], oldTrustScore, newTrustScore)
+}
+
+// PieceDistribution represents how pieces are distributed among peers
+type PieceDistribution struct {
+	Start int
+	End   int
+}
+
+// requestTrustScoresFromProviders requests trust scores from all providers
+func (c *Client) requestTrustScoresFromProviders(providers []peer.AddrInfo, relayAddrStr string) error {
+	var wg sync.WaitGroup
+	errors := make(chan error, len(providers))
+
+	// Clear previous trust scores
+	c.trustScoreMux.Lock()
+	c.providerTrustScores = make(map[string]float64)
+	c.trustScoreMux.Unlock()
+
+	for _, p := range providers {
+		wg.Add(1)
+		go func(peerInfo peer.AddrInfo) {
+			defer wg.Done()
+
+			// Try to connect and request trust score
+			peerConn, err := c.initiateWebRTCConnectionWithRetry(peerInfo.ID, 1)
+			if err != nil {
+				// Try relay connection
+				circuitStr := fmt.Sprintf("%s/p2p-circuit/p2p/%s", relayAddrStr, peerInfo.ID.String())
+				circuitMaddr, err := multiaddr.NewMultiaddr(circuitStr)
+				if err != nil {
+					errors <- fmt.Errorf("relay address error for peer %s: %w", peerInfo.ID.String()[:8], err)
+					return
+				}
+
+				relayInfo := peer.AddrInfo{ID: peerInfo.ID, Addrs: []multiaddr.Multiaddr{circuitMaddr}}
+				peerConn, err = c.initiateWebRTCConnectionWithRetry(relayInfo.ID, 1)
+				if err != nil {
+					errors <- fmt.Errorf("failed to connect to peer %s: %w", peerInfo.ID.String()[:8], err)
+					return
+				}
+			}
+			defer peerConn.Close()
+
+			// Request trust score
+			trustRequest := controlMessage{
+				Command: "REQUEST_TRUST_SCORE",
+				PeerID:  peerInfo.ID.String(),
+			}
+
+			if err := peerConn.SendJSONReliable(trustRequest); err != nil {
+				errors <- fmt.Errorf("failed to send trust request to peer %s: %w", peerInfo.ID.String()[:8], err)
+				return
+			}
+
+			// Wait for response (with timeout)
+			timeout := time.After(10 * time.Second)
+			for {
+				select {
+				case <-timeout:
+					// Set default trust score if no response
+					c.trustScoreMux.Lock()
+					c.providerTrustScores[peerInfo.ID.String()] = 0.5 // Neutral score
+					c.trustScoreMux.Unlock()
+					return
+				case <-time.After(100 * time.Millisecond):
+					// Check if we got the trust score
+					c.trustScoreMux.RLock()
+					_, exists := c.providerTrustScores[peerInfo.ID.String()]
+					c.trustScoreMux.RUnlock()
+					if exists {
+						return
+					}
+				}
+			}
+		}(p)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Collect any errors (for logging)
+	var errorList []error
+	for err := range errors {
+		errorList = append(errorList, err)
+	}
+
+	if len(errorList) > 0 {
+		return fmt.Errorf("encountered %d errors while requesting trust scores", len(errorList))
+	}
+
+	return nil
+}
+
+// calculateWeightedPieceDistribution distributes pieces based on trust scores
+func (c *Client) calculateWeightedPieceDistribution(providers []peer.AddrInfo, totalPieces int) []PieceDistribution {
+	if len(providers) == 0 {
+		return []PieceDistribution{}
+	}
+
+	// Get trust scores
+	c.trustScoreMux.RLock()
+	trustScores := make([]float64, len(providers))
+	totalTrustScore := 0.0
+
+	for i, p := range providers {
+		score, exists := c.providerTrustScores[p.ID.String()]
+		if !exists {
+			score = 0.5 // Default neutral score
+		}
+		trustScores[i] = score
+		totalTrustScore += score
+	}
+	c.trustScoreMux.RUnlock()
+
+	// Handle edge case
+	if totalTrustScore == 0 {
+		totalTrustScore = float64(len(providers)) * 0.5
+		for i := range trustScores {
+			trustScores[i] = 0.5
+		}
+	}
+
+	// Calculate weighted distribution
+	distribution := make([]PieceDistribution, len(providers))
+	currentStart := 0
+
+	for i, score := range trustScores {
+		weight := score / totalTrustScore
+		piecesForPeer := int(float64(totalPieces) * weight)
+
+		// Ensure at least 1 piece per peer (if possible)
+		if piecesForPeer == 0 && currentStart < totalPieces {
+			piecesForPeer = 1
+		}
+
+		// Handle last peer getting remaining pieces
+		if i == len(providers)-1 {
+			piecesForPeer = totalPieces - currentStart
+		}
+
+		distribution[i] = PieceDistribution{
+			Start: currentStart,
+			End:   currentStart + piecesForPeer,
+		}
+
+		currentStart += piecesForPeer
+	}
+
+	return distribution
+}
+
+// finalizePeerTransaction sends trust score parameters to seeder for calculation
+func (c *Client) finalizePeerTransaction(peerID string) {
+	c.trackerMux.Lock()
+	tracker, exists := c.transactionTrackers[peerID]
+	if !exists {
+		c.trackerMux.Unlock()
+		return
+	}
+	// Remove from active trackers
+	delete(c.transactionTrackers, peerID)
+	c.trackerMux.Unlock()
+
+	log.Printf("Finalizing transaction with peer %s: %d chunks, %.2f MB, %d KB/s",
+		peerID[:8], tracker.ChunksReceived, float64(tracker.TotalDataReceived)/(1024*1024),
+		tracker.AverageUploadSpeed/1024)
+
+	// Create trust score update parameters
+	trustParams := &TrustScoreUpdateParams{
+		LeecherPeerID:      c.host.ID().String(),
+		ChunksReceived:     tracker.ChunksReceived,
+		SuccessfulChunks:   tracker.SuccessfulChunks,
+		TotalDataReceived:  tracker.TotalDataReceived,
+		AverageChunkSpeed:  tracker.AverageUploadSpeed, // TODO: Calculate proper chunk speed average
+		TransferSuccessful: tracker.TransferSuccessful,
+	}
+
+	// Send trust score update request to the seeder (peer)
+	c.sendTrustScoreUpdateToSeeder(peerID, trustParams)
+
+	log.Printf("Sent trust score update parameters to seeder %s", peerID[:8])
+}
+
+// checkMyTrustScore displays the current user's trust score and metrics
+func (c *Client) checkMyTrustScore() {
+	ctx := context.Background()
+	myPeerID := c.host.ID().String()
+
+	// Get our own trust metrics
+	peerData, err := c.db.GetPeerTrustScore(ctx, myPeerID)
+	if err != nil {
+		fmt.Printf("Error retrieving trust score: %v\n", err)
+		return
+	}
+
+	fmt.Println("\n=== Your Trust Score & Metrics ===")
+	fmt.Printf("Peer ID: %s\n", myPeerID[:16]+"...")
+	fmt.Printf("Current Trust Score: %.3f/1.000\n", peerData.CurrentTrustScore)
+
+	// Trust score rating
+	var rating string
+	switch {
+	case peerData.CurrentTrustScore >= 0.8:
+		rating = "Excellent"
+	case peerData.CurrentTrustScore >= 0.6:
+		rating = "Good"
+	case peerData.CurrentTrustScore >= 0.4:
+		rating = "Average"
+	case peerData.CurrentTrustScore >= 0.2:
+		rating = "Poor"
+	default:
+		rating = "Very Poor ❌"
+	}
+	fmt.Printf("Rating: %s\n\n", rating)
+
+	// Transfer statistics
+	fmt.Println("=== Transfer Statistics ===")
+	fmt.Printf("Total Transfers: %d\n", peerData.TotalTransfers)
+	fmt.Printf("Successful Transfers: %d\n", peerData.SuccessfulTransfers)
+	if peerData.TotalTransfers > 0 {
+		successRate := float64(peerData.SuccessfulTransfers) / float64(peerData.TotalTransfers) * 100
+		fmt.Printf("Success Rate: %.1f%%\n", successRate)
+	} else {
+		fmt.Printf("Success Rate: N/A (no transfers yet)\n")
+	}
+
+	// Data statistics
+	fmt.Println("\n=== Data Statistics ===")
+	fmt.Printf("Data Seeded: %.2f MB\n", peerData.SeededData)
+	fmt.Printf("Data Leeched: %.2f MB\n", peerData.LeechedData)
+	if peerData.SeededData > 0 {
+		ratioLeechSeed := peerData.LeechedData / peerData.SeededData
+		fmt.Printf("Leech/Seed Ratio: %.2f\n", ratioLeechSeed)
+		if ratioLeechSeed <= 1.0 {
+			fmt.Printf("Sharing Behavior: Good Seeder 📤\n")
+		} else if ratioLeechSeed <= 2.0 {
+			fmt.Printf("Sharing Behavior: Moderate 🔄\n")
+		} else {
+			fmt.Printf("Sharing Behavior: Heavy Leecher 📥\n")
+		}
+	} else {
+		fmt.Printf("Leech/Seed Ratio: N/A (no seeding yet)\n")
+		fmt.Printf("Sharing Behavior: New User 🆕\n")
+	}
+
+	// Performance metrics
+	fmt.Println("\n=== Performance Metrics ===")
+	fmt.Printf("Average Upload Speed: %d KB/s\n", peerData.AverageUploadSpeed/1024)
+	fmt.Printf("Recent Successful Chunks: %d\n", peerData.NoOfSuccChunksLastK)
+	fmt.Printf("Total Chunks Uploaded: %d\n", peerData.TotalFileChunksUploaded)
+	fmt.Printf("Average Online Time: %d hours/day\n", peerData.AverageOnlineTimePerDay)
+
+	// Activity information
+	fmt.Println("\n=== Activity Information ===")
+	fmt.Printf("Last Seen: %s\n", peerData.LastSeen.Format("2006-01-02 15:04:05"))
+	fmt.Printf("Last Updated: %s\n", peerData.SeenAt.Format("2006-01-02 15:04:05"))
+
+	// Tips for improvement
+	if peerData.CurrentTrustScore < 0.6 {
+		fmt.Println("\n=== Tips to Improve Trust Score ===")
+		if peerData.TotalTransfers == 0 {
+			fmt.Println("• Start sharing files to build your reputation")
+		}
+		if peerData.SuccessfulTransfers < peerData.TotalTransfers {
+			fmt.Println("• Ensure stable internet connection for reliable transfers")
+		}
+		if peerData.SeededData == 0 {
+			fmt.Println("• Share files with others to improve your seed/leech ratio")
+		}
+		if peerData.AverageUploadSpeed < 1024 {
+			fmt.Println("• Improve your upload speed for better performance rating")
+		}
+	}
+
+	fmt.Println()
+}
+
+// sendTrustScoreUpdateToSeeder sends trust score parameters to the seeder
+func (c *Client) sendTrustScoreUpdateToSeeder(seederPeerID string, params *TrustScoreUpdateParams) {
+	// First try WebRTC connection
+	c.peersMux.RLock()
+	var seederPeer *webRTC.SimpleWebRTCPeer
+	for pID, peer := range c.webRTCPeers {
+		if pID.String() == seederPeerID {
+			seederPeer = peer
+			break
+		}
+	}
+	c.peersMux.RUnlock()
+
+	// Create control message with trust score update
+	updateMsg := controlMessage{
+		Command:          "UPDATE_TRUST_SCORE",
+		TrustScoreUpdate: params,
+	}
+
+	// Try WebRTC first
+	if seederPeer != nil {
+		err := seederPeer.SendJSONReliable(updateMsg)
+		if err == nil {
+			log.Printf("Successfully sent trust score update to seeder %s via WebRTC", seederPeerID[:8])
+			return
+		}
+		log.Printf("WebRTC failed for trust score update to %s: %v", seederPeerID[:8], err)
+	}
+
+	// Fallback to libp2p stream
+	err := c.sendTrustScoreViaLibp2p(seederPeerID, updateMsg)
+	if err != nil {
+		log.Printf("Failed to send trust score update to seeder %s via libp2p: %v", seederPeerID[:8], err)
+		return
+	}
+
+	log.Printf("Successfully sent trust score update to seeder %s via libp2p", seederPeerID[:8])
+}
+
+// sendTrustScoreViaLibp2p sends trust score update via libp2p stream
+func (c *Client) sendTrustScoreViaLibp2p(seederPeerID string, updateMsg controlMessage) error {
+	// Convert string to peer.ID
+	peerID, err := peer.Decode(seederPeerID)
+	if err != nil {
+		return fmt.Errorf("invalid peer ID: %w", err)
+	}
+
+	// Open a stream to the peer using a dedicated trust score protocol
+	stream, err := c.host.NewStream(context.Background(), peerID, "/torrentium/trust-score/1.0.0")
+	if err != nil {
+		return fmt.Errorf("failed to open stream: %w", err)
+	}
+	defer stream.Close()
+
+	// Send the trust score update message
+	encoder := json.NewEncoder(stream)
+	err = encoder.Encode(updateMsg)
+	if err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
+
+	return nil
+}
+
+// finalizeAllPeerTransactions sends trust score updates for all tracked transactions
+func (c *Client) finalizeAllPeerTransactions() {
+	c.trackerMux.Lock()
+	defer c.trackerMux.Unlock()
+
+	for peerID, tracker := range c.transactionTrackers {
+		log.Printf("Finalizing transaction with peer %s: %d chunks, %.2f MB, %d KB/s",
+			peerID[:8], tracker.ChunksReceived, float64(tracker.TotalDataReceived)/(1024*1024),
+			tracker.AverageUploadSpeed/1024)
+
+		// Calculate average chunk speed for pieces assigned to this seeder
+		averageChunkSpeed := 0
+		if len(tracker.ChunkSpeeds) > 0 {
+			totalSpeed := 0
+			for _, speed := range tracker.ChunkSpeeds {
+				totalSpeed += speed
+			}
+			averageChunkSpeed = totalSpeed / len(tracker.ChunkSpeeds)
+		}
+
+		// Create trust score update parameters
+		trustParams := &TrustScoreUpdateParams{
+			LeecherPeerID:      c.host.ID().String(),
+			ChunksReceived:     tracker.ChunksReceived,
+			SuccessfulChunks:   tracker.SuccessfulChunks,
+			TotalDataReceived:  tracker.TotalDataReceived,
+			AverageChunkSpeed:  averageChunkSpeed, // Calculated average of all chunk speeds
+			TransferSuccessful: tracker.TransferSuccessful,
+		}
+
+		// Send trust score update request to the seeder (peer)
+		c.sendTrustScoreUpdateToSeeder(peerID, trustParams)
+
+		log.Printf("Sent trust score update parameters to seeder %s (avg chunk speed: %d KB/s)",
+			peerID[:8], averageChunkSpeed/1024)
+	}
+
+	// Clear all transaction trackers
+	c.transactionTrackers = make(map[string]*TransactionTracker)
+}
+
+// registerTrustScoreProtocol sets up the trust score update protocol handler
+func (c *Client) registerTrustScoreProtocol() {
+	c.host.SetStreamHandler("/torrentium/trust-score/1.0.0", func(s network.Stream) {
+		defer s.Close()
+
+		log.Printf("Received trust score update from %s", s.Conn().RemotePeer())
+
+		// Decode the incoming trust score message
+		var updateMsg controlMessage
+		decoder := json.NewDecoder(s)
+		err := decoder.Decode(&updateMsg)
+		if err != nil {
+			log.Printf("Error decoding trust score message: %v", err)
+			return
+		}
+
+		// Process the trust score update
+		if updateMsg.Command == "UPDATE_TRUST_SCORE" {
+			ctx := context.Background()
+			c.handleTrustScoreUpdate(ctx, updateMsg, nil) // nil peer since this came via libp2p
+		} else {
+			log.Printf("Unexpected message type in trust score protocol: %s", updateMsg.Command)
+		}
+	})
+}
+
+// sendImmediateTrustScoreUpdate sends trust score update immediately when a piece completes
+func (c *Client) sendImmediateTrustScoreUpdate(pieceIndex int64, state *DownloadState) {
+	// Find which peer was assigned this piece
+	state.mu.Lock()
+	assignedPeer, exists := state.PieceAssignees[int(pieceIndex)]
+	state.mu.Unlock()
+
+	if !exists {
+		return // No peer assigned to this piece
+	}
+
+	peerID := assignedPeer.String()
+
+	// Get transaction tracker for this peer
+	c.trackerMux.RLock()
+	tracker, exists := c.transactionTrackers[peerID]
+	c.trackerMux.RUnlock()
+
+	if !exists {
+		return // No tracker for this peer
+	}
+
+	// Calculate current average chunk speed for this peer
+	averageChunkSpeed := 0
+	if len(tracker.ChunkSpeeds) > 0 {
+		totalSpeed := 0
+		for _, speed := range tracker.ChunkSpeeds {
+			totalSpeed += speed
+		}
+		averageChunkSpeed = totalSpeed / len(tracker.ChunkSpeeds)
+	}
+
+	// Create trust score update parameters for this piece
+	trustParams := &TrustScoreUpdateParams{
+		LeecherPeerID:      c.host.ID().String(),
+		ChunksReceived:     tracker.ChunksReceived,
+		SuccessfulChunks:   tracker.SuccessfulChunks,
+		TotalDataReceived:  tracker.TotalDataReceived,
+		AverageChunkSpeed:  averageChunkSpeed,
+		TransferSuccessful: true, // This piece was successful
+	}
+
+	// Send immediately via libp2p (more reliable than waiting for WebRTC)
+	updateMsg := controlMessage{
+		Command:          "UPDATE_TRUST_SCORE",
+		TrustScoreUpdate: trustParams,
+	}
+
+	err := c.sendTrustScoreViaLibp2p(peerID, updateMsg)
+	if err != nil {
+		log.Printf("Failed to send immediate trust score update for piece %d to peer %s: %v",
+			pieceIndex, peerID[:8], err)
+	} else {
+		log.Printf("Sent immediate trust score update for piece %d to peer %s",
+			pieceIndex, peerID[:8])
+	}
+}
+
+// sendTrustScoreUpdate sends trust score parameters immediately while WebRTC connection is active
+func (c *Client) sendTrustScoreUpdate(peer *webRTC.SimpleWebRTCPeer, pieceIndex int, state *DownloadState) {
+	peerID := peer.GetSignalingStream().Conn().RemotePeer().String()
+
+	// Get transaction tracker for this peer
+	c.trackerMux.RLock()
+	tracker, exists := c.transactionTrackers[peerID]
+	c.trackerMux.RUnlock()
+
+	if !exists {
+		return // No tracker for this peer
+	}
+
+	// Calculate the data size for this specific piece only
+	pieceSize := int64(0)
+	if pieceIndex < len(state.Pieces) {
+		pieceSize = state.Pieces[pieceIndex].Size
+	}
+
+	// Calculate current average chunk speed for this peer
+	averageChunkSpeed := 0
+	if len(tracker.ChunkSpeeds) > 0 {
+		totalSpeed := 0
+		for _, speed := range tracker.ChunkSpeeds {
+			totalSpeed += speed
+		}
+		averageChunkSpeed = totalSpeed / len(tracker.ChunkSpeeds)
+	}
+
+	// Create trust score update parameters for THIS PIECE ONLY
+	trustParams := &TrustScoreUpdateParams{
+		LeecherPeerID:      c.host.ID().String(),
+		ChunksReceived:     1,         // Just this piece
+		SuccessfulChunks:   1,         // This piece was successful
+		TotalDataReceived:  pieceSize, // Only this piece's data
+		AverageChunkSpeed:  averageChunkSpeed,
+		TransferSuccessful: true, // This piece was successful
+	}
+
+	// Send through the same WebRTC connection
+	updateMsg := controlMessage{
+		Command:          "UPDATE_TRUST_SCORE",
+		TrustScoreUpdate: trustParams,
+	}
+
+	err := peer.SendJSONReliable(updateMsg)
+	if err != nil {
+		log.Printf("Failed to send trust score update for piece %d to peer %s: %v",
+			pieceIndex, peerID[:8], err)
+	} else {
+		log.Printf("✅ Sent trust score update for piece %d to peer %s (size: %.2f MB, speed: %d KB/s)",
+			pieceIndex, peerID[:8], float64(pieceSize)/(1024*1024), averageChunkSpeed/1024)
+
+		// Update leecher's own database to record that it has leeched data
+		c.updateLeecherDatabase(trustParams)
+	}
+} // updateLeecherDatabase updates the leecher's own database to record downloaded data
+func (c *Client) updateLeecherDatabase(params *TrustScoreUpdateParams) {
+	ctx := context.Background()
+
+	// Get leecher's own trust data
+	leecherData, err := c.db.GetPeerTrustScore(ctx, c.host.ID().String())
+	if err != nil {
+		log.Printf("Error getting leecher's own trust data: %v", err)
+		return
+	}
+
+	// Update leecher's LeechedData (data downloaded from seeders)
+	leecherData.LeechedData += float64(params.TotalDataReceived) / (1024 * 1024) // Convert to MB
+
+	// Update last seen
+	leecherData.LastSeen = time.Now()
+
+	// Update in leecher's database
+	err = c.db.UpdatePeerTrustScore(ctx, leecherData)
+	if err != nil {
+		log.Printf("Error updating leecher's own database: %v", err)
+		return
+	}
+
+	log.Printf("📥 Updated leecher's own LeechedData: +%.2f MB", float64(params.TotalDataReceived)/(1024*1024))
 }

@@ -20,7 +20,7 @@ import (
 
 const privKeyFile = "private_key"
 
-func reserveWithRelay(ctx context.Context, relayAddrStr string, h host.Host) error {
+func reserveWithRelay(ctx context.Context, relayAddrStr string, h host.Host) error { // Reserves a circuit slot on the relay server
 	maddr, err := ma.NewMultiaddr(relayAddrStr)
 	if err != nil {
 		return fmt.Errorf("invalid relay multiaddr: %w", err)
@@ -45,20 +45,20 @@ func NewHost(
 	onOffer func(offer, remotePeerID string, s network.Stream) (string, error),
 ) (host.Host, *dht.IpfsDHT, error) {
 
-	// 🔑 Identity key
+	// Identity key
 	priv, err := loadOrGeneratePrivateKey()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load/generate private key: %w", err)
 	}
 
-	// 📡 Local listen address
+	// Local listen address
 	maddr, err := ma.NewMultiaddr(listenAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse listen address '%s': %w", listenAddr, err)
 	}
 
-	// 🌐 Relay config (static relay on Render)
-	relayAddrStr := "/dns4/relay-torrentium.onrender.com/tcp/443/wss/p2p/12D3KooWKsLZ7VmZTq7qBHj2cv4DczbEoNFLLDaLLk9ADVxDnqS6"
+	// Relay config (static relay on Render)
+	relayAddrStr := "/dns4/relay-torrentium-nnyw.onrender.com/tcp/443/wss/p2p/12D3KooWHs4BxfNGuKmQMixupzFrsX9zLXnSrGPvZM3DCMvjTA6j"
 	relayMaddr, err := ma.NewMultiaddr(relayAddrStr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid relay multiaddr: %w", err)
@@ -116,7 +116,7 @@ func Bootstrap(ctx context.Context, h host.Host, d *dht.IpfsDHT) error {
 	// Updated bootstrap nodes with more reliable addresses
 	bootstrapNodes := []string{
 		// Official IPFS bootstrap nodes (mix of DNS and direct IP)
-		// "/dns4/relay-torrentium-9ztp.onrender.com/tcp/433/ws/p2p/12D3KooWDzR4XF65JtKrbQWG42QajS9ox2ptBwdRkQ7un6h7RAKQ",
+		//"/dns4/relay-torrentium-9ztp.onrender.com/tcp/433/ws/p2p/12D3KooWDzR4XF65JtKrbQWG42QajS9ox2ptBwdRkQ7un6h7RAKQ",
 
 		"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 		"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
@@ -125,6 +125,8 @@ func Bootstrap(ctx context.Context, h host.Host, d *dht.IpfsDHT) error {
 
 		// Direct IP addresses as fallback (more reliable)
 		"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+		"/ip4/147.75.80.110/tcp/4001/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+		"/ip4/147.75.195.153/tcp/4001/p2p/QmcfgsJsMtx6qJb74akCw1M24X1zFwgGo11h1cuhwQjtJP",
 		"/ip4/104.236.179.241/tcp/4001/p2p/QmSoLPppuBtQSGwKDZT2M73ULpjvfd3aZ6ha4oFGL1KrGM",
 		"/ip4/128.199.219.111/tcp/4001/p2p/QmSoLSafTMBsPKadTEgaXctDQVcqN88CNLHXMkTNwMKPnu",
 		"/ip4/104.236.76.40/tcp/4001/p2p/QmSoLV4Bbm51jM9C4gDYZQ9Cy3U6aXMJDAbzgu2fzaDs64",

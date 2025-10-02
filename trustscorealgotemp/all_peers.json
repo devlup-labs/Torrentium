@@ -1,0 +1,14 @@
+[
+    {
+        "id": 1,
+        "global_trust_score": 0.4
+    },
+    {
+        "id": 2,
+        "global_trust_score": 0.6
+    },
+    {
+        "id": 3,
+        "global_trust_score": 0.2
+    }
+]
