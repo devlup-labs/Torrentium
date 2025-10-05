@@ -655,7 +655,7 @@ func (c *Client) downloadFile(cidStr string) error {
 	}
 
 	fmt.Printf("Found %d providers. Getting file manifest...\n", len(providers))
-	relayAddrStr := "/dns4/relay-torrentium.onrender.com/tcp/443/wss/p2p/12D3KooWKsLZ7VmZTq7qBHj2cv4DczbEoNFLLDaLLk9ADVxDnqS6"
+	relayAddrStr := "/dns4/relay-torrentium.onrender.com/tcp/443/wss/p2p/12D3KooWMbTZL5taZH4CK9hCkTLkXaPadBoMR3KJZRFhbYBPrdkK"
 
 	var manifest controlMessage
 	var firstPeer *webRTC.SimpleWebRTCPeer
@@ -789,34 +789,65 @@ func (c *Client) downloadFile(cidStr string) error {
 	return nil
 }
 
+// func (c *Client) downloadChunksFromPeer(peer *webRTC.SimpleWebRTCPeer, state *DownloadState, startPiece, endPiece int) {
+// 	for i := startPiece; i < endPiece; i++ {
+// 		state.mu.Lock()
+// 		if state.PieceStatus[i] {
+// 			state.mu.Unlock()
+// 			continue
+// 		}
+// 		state.PieceAssignees[i] = peer.GetSignalingStream().Conn().RemotePeer()
+// 		state.mu.Unlock()
+
+// 		req := controlMessage{
+// 			Command: "REQUEST_PIECE",
+// 			CID:     state.Manifest.CID,
+// 			Index:   int64(i),
+// 		}
+
+// 		state.mu.Lock()   //piece timeout
+// 		state.pieceTimers[i] = time.AfterFunc(PieceTimeout, func() {
+// 			log.Printf("Piece %d timed out, re-requesting...", i)
+// 			c.reRequestPiece(state, i)
+// 		})
+// 		state.mu.Unlock()
+
+// 		if err := peer.SendJSONReliable(req); err != nil {
+// 			log.Printf("Failed to request piece %d from %s: %v", i, peer.GetSignalingStream().Conn().RemotePeer(), err)
+// 			return
+// 		}
+// 	}
+// }
+
 func (c *Client) downloadChunksFromPeer(peer *webRTC.SimpleWebRTCPeer, state *DownloadState, startPiece, endPiece int) {
-	for i := startPiece; i < endPiece; i++ {
-		state.mu.Lock()
-		if state.PieceStatus[i] {
-			state.mu.Unlock()
-			continue
-		}
-		state.PieceAssignees[i] = peer.GetSignalingStream().Conn().RemotePeer()
-		state.mu.Unlock()
+    for i := startPiece; i < endPiece; i++ {
+        state.mu.Lock()
+        if state.PieceStatus[i] {
+            state.mu.Unlock()
+            continue
+        }
+        state.PieceAssignees[i] = peer.GetSignalingStream().Conn().RemotePeer()
+        state.mu.Unlock()
 
-		req := controlMessage{
-			Command: "REQUEST_PIECE",
-			CID:     state.Manifest.CID,
-			Index:   int64(i),
-		}
+        req := controlMessage{
+            Command: "REQUEST_PIECE",
+            CID:     state.Manifest.CID,
+            Index:   int64(i),
+        }
 
-		state.mu.Lock()   //piece timeout
-		state.pieceTimers[i] = time.AfterFunc(PieceTimeout, func() {
-			log.Printf("Piece %d timed out, re-requesting...", i)
-			c.reRequestPiece(state, i)
-		})
-		state.mu.Unlock()
+        state.mu.Lock()
+        state.pieceTimers[i] = time.AfterFunc(PieceTimeout, func() {
+            log.Printf("Piece %d timed out, re-requesting...", i)
+            c.reRequestPiece(state, i)
+        })
+        state.mu.Unlock()
 
-		if err := peer.SendJSONReliable(req); err != nil {
-			log.Printf("Failed to request piece %d from %s: %v", i, peer.GetSignalingStream().Conn().RemotePeer(), err)
-			return
-		}
-	}
+        // Use reliable channel for piece requests (control messages)
+        if err := peer.SendJSONReliable(req); err != nil {
+            log.Printf("Failed to request piece %d from %s: %v", i, peer.GetSignalingStream().Conn().RemotePeer(), err)
+            return
+        }
+    }
 }
 
 func (c *Client) reRequestPiece(state *DownloadState, pieceIndex int) {
@@ -1214,6 +1245,8 @@ func (c *Client) handlePieceRequest(ctx context.Context, ctrl controlMessage, pe
 		return
 	}
 
+	channelIndex := peer.GetFileChannelForPiece(int(ctrl.Index))
+
 	totalChunks := (len(pieceBuffer) + MaxChunk - 1) / MaxChunk
 	for i := 0; i < totalChunks; i++ {
 		start := i * MaxChunk
@@ -1245,10 +1278,10 @@ func (c *Client) handlePieceRequest(ctx context.Context, ctrl controlMessage, pe
 		c.unackedChunksMux.Unlock()
 		time.AfterFunc(RetransmissionTimeout, func() { c.retransmitChunk(peer, chunkMsg) })
 
-		if err := peer.SendJSON(chunkMsg); err != nil {
-			log.Printf("Failed to send chunk %d of piece %d: %v", i, ctrl.Index, err)
-			return
-		}
+		if err := peer.SendOnFileChannel(channelIndex, chunkMsg); err != nil {
+            log.Printf("Failed to send chunk %d of piece %d on channel %d: %v", i, ctrl.Index, channelIndex, err)
+            return
+        }
 		delay := c.congestionCtrl[peer.GetSignalingStream().Conn().RemotePeer()]
 		time.Sleep(delay)
 	}
