@@ -1,0 +1,12 @@
+[
+    {
+        "id": 1,
+        "name": "Person_1",
+        "trust_score": 0.3
+    },
+    {
+        "id": 2,
+        "name": "Person_2",
+        "trust_score": 0.8
+    }
+]
