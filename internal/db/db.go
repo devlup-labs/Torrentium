@@ -75,7 +75,7 @@ var DB *sql.DB
 
 func InitDB() *sql.DB {
 	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Could not load .env file: %v", err)
+		//log.Printf("Warning: Could not load .env file: %v", err)
 	}
 	dbpath := os.Getenv("SQLITE_DB_PATH")
 	if dbpath == "" {

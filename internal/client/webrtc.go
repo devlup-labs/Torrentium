@@ -58,8 +58,8 @@ type SimpleWebRTCPeer struct {
 	closeOnce         sync.Once
 	closeCh           chan struct{}
 	keepAliveTick     *time.Ticker
-	reliableDCOpen    chan struct{} // ADDED: To signal when the reliable channel is open
-	dcOpenWg          sync.WaitGroup    // ADDED: To wait for all data channels
+	reliableDCOpen    chan struct{} //To signal when the reliable channel is open
+	dcOpenWg          sync.WaitGroup    //To wait for all data channels
 }
 
 func NewSimpleWebRTCPeer(onMessage func(msg webrtc.DataChannelMessage, peer *SimpleWebRTCPeer), onClose func(peerID peer.ID)) (*SimpleWebRTCPeer, error) {
@@ -74,10 +74,10 @@ func NewSimpleWebRTCPeer(onMessage func(msg webrtc.DataChannelMessage, peer *Sim
 		onCloseCallback:  onClose,
 		closeCh:          make(chan struct{}),
 		state:            ConnectionStateNew,
-		reliableDCOpen:   make(chan struct{}), // MODIFIED: Initialize the new channel
+		reliableDCOpen:   make(chan struct{}), //Initialize the new channel
 	}
 
-	// MODIFIED: We expect two data channels: "data" and "reliable"
+	//two data channels: "data" and "reliable"
 	peer.dcOpenWg.Add(2)
 
 	peer.setupConnectionHandlers()
@@ -92,7 +92,6 @@ func (p *SimpleWebRTCPeer) setupConnectionHandlers() {
 			p.setConnectionState(ConnectionStateConnected)
 		case webrtc.ICEConnectionStateDisconnected:
 			p.setConnectionState(ConnectionStateDisconnected)
-			// You can add automatic reconnection logic here if desired
 		case webrtc.ICEConnectionStateFailed:
 			p.setConnectionState(ConnectionStateFailed)
 			p.Close() // Close the connection on failure
@@ -125,11 +124,11 @@ func (p *SimpleWebRTCPeer) setupDataChannel(dc *webrtc.DataChannel) {
 		log.Printf("Data channel '%s' opened", dc.Label())
 		p.setConnectionState(ConnectionStateConnected)
 
-		// MODIFIED: Signal that this data channel is open
+		//Signal that this data channel is open
 		p.dcOpenWg.Done()
 
 		if dc.Label() == "reliable" {
-			// MODIFIED: Specifically signal that the reliable channel is open
+			//Specifically signal that the reliable channel is open
 			close(p.reliableDCOpen)
 		}
 	})
@@ -244,7 +243,7 @@ func (p *SimpleWebRTCPeer) SendJSON(v interface{}) error {
 	return p.dc.SendText(string(data))
 }
 
-// MODIFIED: SendJSONReliable now waits for the channel to be ready
+//SendJSONReliable waits for the channel to be ready
 func (p *SimpleWebRTCPeer) SendJSONReliable(v interface{}) error {
 	select {
 	case <-p.reliableDCOpen:
@@ -333,7 +332,7 @@ func (p *SimpleWebRTCPeer) WaitForConnection(timeout time.Duration) error {
 	}
 }
 
-// ADDED: New function to wait for all data channels
+//function to wait for all data channels
 func (p *SimpleWebRTCPeer) WaitForDataChannels(timeout time.Duration) error {
 	done := make(chan struct{})
 	go func() {

@@ -31,7 +31,6 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	// "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multihash"
 )
@@ -186,7 +185,7 @@ func main() {
 	defer cancel()
 
 	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Could not load .env file: %v", err)
+		//log.Printf("Warning: Could not load .env file: %v", err)
 	}
 
 	DB := db.InitDB()
@@ -267,13 +266,6 @@ func (c *Client) commandLoop() {
 			}
 		case "peers":
 			c.listConnectedPeers()
-		case "connect":
-			if len(args) != 1 {
-				fmt.Println("Usage: connect <multiaddr>")
-				fmt.Println("Example: connect /ip4/127.0.0.1/tcp/54437/p2p/12D3KooWBLZFWsGZxoCFC8NsFgKvD6WJ6xV9UmYdR8t2C1kqYTcd")
-			} else {
-				err = c.connectToPeer(args[0])
-			}
 		case "announce":
 			if len(args) != 1 {
 				fmt.Println("Usage: announce <cid>")
@@ -282,10 +274,6 @@ func (c *Client) commandLoop() {
 			}
 		case "health":
 			c.checkConnectionHealth()
-		case "nettest":
-			c.performNetworkDiagnostics()
-		case "localtest":
-			c.performLocalWebRTCTest()
 		case "debug":
 			c.debugNetworkStatus()
 		case "trustscore":
@@ -302,24 +290,92 @@ func (c *Client) commandLoop() {
 }
 
 func (c *Client) printInstructions() {
-	fmt.Println("\n=== Decentralized P2P File Sharing ===")
-	fmt.Println("Commands:")
-	fmt.Println(" add <path>           - Share a file on the network")
-	fmt.Println(" list                 - List your shared files")
-	fmt.Println(" search <cid|text>    - Search by CID or filename text")
-	fmt.Println(" download <cid>       - Download a file by CID")
-	fmt.Println(" peers                - Show connected peers")
-	fmt.Println(" connect <multiaddr>  - Manually connect to a peer")
-	fmt.Println(" announce <cid>       - Re-announce a file to DHT")
-	fmt.Println(" health               - Check connection health")
-	fmt.Println(" nettest              - Perform comprehensive network diagnostics")
-	fmt.Println(" localtest            - Test local WebRTC functionality")
-	fmt.Println(" debug                - Show detailed network debug info")
-	fmt.Println(" trustscore           - Check your current trust score and metrics")
-	fmt.Println(" help                 - Show this help")
-	fmt.Println(" exit                 - Exit the application")
-	fmt.Printf("\nYour Peer ID: %s\n", c.host.ID())
-	fmt.Printf("Listening on: %v\n\n", c.host.Addrs())
+
+	peerID := c.host.ID().String()
+	minWidth := len(" Your Peer ID: " + peerID) + 4 // 4 for border characters
+	width := 80
+	if minWidth > width {
+		width = minWidth + 10 
+	}
+	
+	// Create the box
+	topBorder := "┌" + strings.Repeat("─", width-2) + "┐"
+	bottomBorder := "└" + strings.Repeat("─", width-2) + "┘"
+	
+	// Helper function to create a centered line
+	centerLine := func(text string) string {
+		if len(text) >= width-4 {
+			return "│ " + text[:width-6] + "... │"
+		}
+		padding := (width - 4 - len(text)) / 2
+		leftPad := strings.Repeat(" ", padding)
+		rightPad := strings.Repeat(" ", width-4-len(text)-padding)
+		return "│ " + leftPad + text + rightPad + " │"
+	}
+	
+	// Helper function to create a left-aligned line
+	leftLine := func(text string) string {
+		if len(text) >= width-4 {
+			return "│ " + text[:width-6] + "... │"
+		}
+		rightPad := strings.Repeat(" ", width-4-len(text))
+		return "│ " + text + rightPad + " │"
+	}
+	
+	// Print the fancy box
+	fmt.Println()
+	fmt.Println(topBorder)
+	fmt.Println(centerLine("DECENTRALIZED P2P FILE SHARING"))
+	fmt.Println("│" + strings.Repeat("─", width-2) + "│")
+	fmt.Println(centerLine("Available Commands"))
+	fmt.Println("│" + strings.Repeat(" ", width-2) + "│")
+	
+	// Commands with descriptions
+	commands := [][]string{
+		{"add <path>", "Share a file on the network"},
+		{"list", "List your shared files"},
+		{"search <cid|text>", "Search by CID or filename text"},
+		{"download <cid>", "Download a file by CID"},
+		{"peers", "Show connected peers"},
+		{"announce <cid>", "Re-announce a file to DHT"},
+		{"health", "Check connection health"},
+		{"debug", "Show detailed network debug info"},
+		{"help", "Show this help"},
+		{"exit", "Exit the application"},
+	}
+	
+	for _, cmd := range commands {
+		cmdText := fmt.Sprintf(" %-20s - %s", cmd[0], cmd[1])
+		fmt.Println(leftLine(cmdText))
+	}
+	
+	fmt.Println("│" + strings.Repeat(" ", width-2) + "│")
+	fmt.Println("│" + strings.Repeat("─", width-2) + "│")
+	
+	// Network info
+	peerID = c.host.ID().String()
+	fmt.Println(leftLine(" Your Peer ID: " + peerID))
+	
+	// Show listening addresses
+	addrs := c.host.Addrs()
+	fmt.Println(leftLine(" Listening on:"))
+	
+	for i, addr := range addrs {
+		if i >= 3 { // Limit to 3 addresses to fit in box
+			moreAddrs := len(addrs) - 3
+			fmt.Println(leftLine(fmt.Sprintf("   ... and %d more", moreAddrs)))
+			break
+		}
+		addrStr := addr.String()
+		if len(addrStr) > width-8 {
+			addrStr = addrStr[:width-11] + "..."
+		}
+		fmt.Println(leftLine("   " + addrStr))
+	}
+	
+	fmt.Println(bottomBorder)
+	fmt.Println()
+
 }
 
 func (c *Client) debugNetworkStatus() {
@@ -402,101 +458,6 @@ func (c *Client) checkConnectionHealth() {
 	} else {
 		fmt.Println(" - Good DHT connectivity")
 	}
-}
-
-func (c *Client) performNetworkDiagnostics() {
-	fmt.Println("\n=== Network Diagnostics ===")
-
-	// Check our addresses and detect local network
-	fmt.Printf("Our listening addresses:\n")
-	hasLocalAddr := false
-	for _, addr := range c.host.Addrs() {
-		addrStr := addr.String()
-		fmt.Printf(" - %s/p2p/%s\n", addr, c.host.ID())
-		if strings.Contains(addrStr, "192.168.") || strings.Contains(addrStr, "10.") || strings.Contains(addrStr, "172.") {
-			hasLocalAddr = true
-		}
-	}
-
-	if hasLocalAddr {
-		fmt.Println("Local network addresses detected - optimized for same-network connections")
-	} else {
-		fmt.Println("No local network addresses detected")
-	}
-
-	// Test ICE connectivity
-	fmt.Println("\nTesting ICE connectivity...")
-	if err := webRTC.TestICEConnectivity(); err != nil {
-		fmt.Printf("ICE connectivity test failed: %v\n", err)
-		fmt.Println("This indicates potential WebRTC connection issues")
-	} else {
-		fmt.Println("ICE connectivity test passed")
-	}
-
-	// Check libp2p connectivity
-	peers := c.host.Network().Peers()
-	fmt.Printf("\nlibp2p peer connections: %d\n", len(peers))
-	if len(peers) > 0 {
-		fmt.Println("Connected peers:")
-		for i, peerID := range peers {
-			if i >= 5 { // Limit output
-				fmt.Printf(" ... and %d more\n", len(peers)-5)
-				break
-			}
-			conn := c.host.Network().ConnsToPeer(peerID)
-			if len(conn) > 0 {
-				remoteAddr := conn[0].RemoteMultiaddr().String()
-				fmt.Printf(" - %s (%s)\n", peerID, remoteAddr)
-				if strings.Contains(remoteAddr, "192.168.") || strings.Contains(remoteAddr, "10.") || strings.Contains(remoteAddr, "172.") {
-					fmt.Printf("Local network peer\n")
-				}
-			}
-		}
-	}
-
-	// Check DHT health
-	routingTableSize := c.dht.RoutingTable().Size()
-	fmt.Printf("\nDHT routing table size: %d\n", routingTableSize)
-
-	fmt.Println("\nFor same-network connections:")
-	fmt.Println("   1. Make sure both peers are connected to libp2p first")
-	fmt.Println("   2. WebRTC should work directly without TURN servers")
-	fmt.Println("   3. Use 'peers' command to see connected peers")
-	fmt.Println("   4. Use 'connect <multiaddr>' to manually connect")
-
-	fmt.Println("\nDiagnostics complete.")
-}
-
-func (c *Client) performLocalWebRTCTest() {
-	fmt.Println("\n=== Local Network WebRTC Test ===")
-
-	// Create a simple WebRTC peer for testing
-	testPeer, err := webRTC.NewSimpleWebRTCPeer(func(msg webrtc.DataChannelMessage, peer *webRTC.SimpleWebRTCPeer) {
-		log.Printf("Test received message: %s", string(msg.Data))
-	}, func(peerID peer.ID) {
-		// No-op for this test
-	})
-	if err != nil {
-		fmt.Printf("Failed to create test WebRTC peer: %v\n", err)
-		return
-	}
-	defer testPeer.Close()
-
-	// Try to create an offer to test the process
-	offer, err := testPeer.CreateOffer()
-	if err != nil {
-		fmt.Printf("Failed to create WebRTC offer: %v\n", err)
-		return
-	}
-
-	fmt.Printf("WebRTC offer created successfully (length: %d chars)\n", len(offer))
-
-	// Try to wait for ICE gathering
-	fmt.Println("Waiting 5 seconds for ICE candidate gathering...")
-	time.Sleep(5 * time.Second)
-
-	fmt.Println("Local WebRTC test completed - basic functionality working")
-	fmt.Println("If downloads still fail, the issue is likely in the peer-to-peer signaling")
 }
 
 func (c *Client) addFile(filePath string) error {
@@ -767,7 +728,7 @@ func (c *Client) downloadFile(cidStr string) error {
 
 			log.Printf("✅ Relay dial to %s successful", p.ID)
 
-			// Now perform WebRTC handshake
+			//perform WebRTC handshake
 			peerConn, err = c.initiateWebRTCConnectionWithRetry(p.ID, 1)
 			if err != nil {
 				log.Printf("⚠ WebRTC connection via relay failed: %v", err)
@@ -927,8 +888,7 @@ func (c *Client) downloadChunksFromPeer(peer *webRTC.SimpleWebRTCPeer, state *Do
 			Index:   int64(i),
 		}
 
-		// New: Add piece timeout
-		state.mu.Lock()
+		state.mu.Lock()   //piece timeout
 		state.pieceTimers[i] = time.AfterFunc(PieceTimeout, func() {
 			log.Printf("Piece %d timed out, re-requesting...", i)
 			c.reRequestPiece(state, i)
@@ -1049,7 +1009,6 @@ func (c *Client) initiateWebRTCConnectionWithRetry(targetPeerID peer.ID, maxRetr
 			}
 
 			fmt.Printf("Successfully connected to peer %s\n", info.ID)
-			// Shorter stabilization time for local network
 
 			time.Sleep(1 * time.Second)
 		}
@@ -1058,7 +1017,6 @@ func (c *Client) initiateWebRTCConnectionWithRetry(targetPeerID peer.ID, maxRetr
 		if err != nil {
 			lastErr = err
 			return nil, err
-			// continue
 		}
 
 		offer, err := webrtcPeer.CreateOffer()
@@ -1119,7 +1077,7 @@ func (c *Client) initiateWebRTCConnectionWithRetry(targetPeerID peer.ID, maxRetr
 			continue
 		}
 
-		// MODIFIED: Add block to wait for the data channels to be ready
+		//wait for the data channels to be ready
 		if err := webrtcPeer.WaitForDataChannels(10 * time.Second); err != nil {
 			webrtcPeer.Close()
 			lastErr = fmt.Errorf("data channels did not open in time: %w", err)
@@ -1167,7 +1125,6 @@ func (c *Client) onDataChannelMessage(msg webrtc.DataChannelMessage, peer *webRT
 		log.Printf("Received unexpected binary message, expecting JSON.")
 		return
 	}
-	// Robustness: Handle empty messages that might be causing "Unknown control command: "
 	if len(msg.Data) == 0 {
 		return
 	}
@@ -1215,7 +1172,7 @@ func (c *Client) handleControlMessage(ctrl controlMessage, peer *webRTC.SimpleWe
 	case "UPDATE_TRUST_SCORE":
 		c.handleTrustScoreUpdate(ctx, ctrl, peer)
 	default:
-		// log.Printf("Unknown control command: %s", ctrl.Command)
+		//do nothing
 	}
 }
 
@@ -1301,7 +1258,7 @@ func (c *Client) handlePieceChunk(ctrl controlMessage, peer *webRTC.SimpleWebRTC
 	}
 
 	if isComplete {
-		// Stop the timer for this piece
+		//Stop the timer for this piece
 		if timer, ok := state.pieceTimers[int(ctrl.Index)]; ok {
 			timer.Stop()
 			delete(state.pieceTimers, int(ctrl.Index))
@@ -1313,7 +1270,7 @@ func (c *Client) handlePieceChunk(ctrl controlMessage, peer *webRTC.SimpleWebRTC
 			pieceData = append(pieceData, chunk...)
 		}
 
-		// Verify piece hash
+		//Verify piece hash
 		h := sha256.New()
 		h.Write(pieceData)
 		hash := hex.EncodeToString(h.Sum(nil))
@@ -1464,8 +1421,6 @@ func (c *Client) handleManifestRequest(ctx context.Context, ctrl controlMessage,
 		NumPieces: int64(len(pieces)),
 		Pieces:    pieces,
 		Filename:  localFile.Filename,
-		// From:      string(c.host.ID()),
-		// Target:    ctrl.From,
 	}
 
 	if err := peer.SendJSONReliable(manifest); err != nil {
@@ -1473,7 +1428,6 @@ func (c *Client) handleManifestRequest(ctx context.Context, ctrl controlMessage,
 	}
 }
 
-// MODIFIED: Added a log message for better debugging
 func (c *Client) onWebRTCPeerClose(peerID peer.ID) {
 	log.Printf("WebRTC peer disconnected: %s", peerID)
 	c.peersMux.Lock()
@@ -1502,7 +1456,6 @@ func min64(a, b int64) int64 {
 	return b
 }
 
-// New: monitorCongestion
 func (c *Client) monitorCongestion() {
 	ticker := time.NewTicker(PingInterval)
 	for range ticker.C {

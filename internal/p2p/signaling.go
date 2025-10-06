@@ -76,7 +76,6 @@ func RegisterSignalingProtocol(h host.Host, onOffer func(offer, remotePeerID str
 				log.Printf("Peer requested signaling stream close")
 				return
 			case "ice-candidate":
-				// For now, just log ICE candidates
 				log.Printf("Received ICE candidate from peer")
 			default:
 				log.Printf("Unknown signaling message type: %s", additionalMsg.Type)
