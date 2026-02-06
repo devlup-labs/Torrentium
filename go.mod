@@ -14,6 +14,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/ipfs/boxo v0.33.1 // indirect
 	github.com/ipfs/go-datastore v0.8.2 // indirect
 	github.com/ipld/go-ipld-prime v0.21.0 // indirect
@@ -24,6 +25,8 @@ require (
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/polydawn/refmt v0.89.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/spf13/cobra v1.10.2 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/otel v1.37.0 // indirect
