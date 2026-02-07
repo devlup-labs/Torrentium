@@ -58,8 +58,7 @@ func NewHost(
 	}
 
 	// Relay config (static relay on Render)
-	relayAddrStr := "/dns4/relay-torrentium.onrender.com/tcp/443/wss/p2p/12D3KooWS7jchAU23xcSYasitheTvTyBpjSx4KuRgj5rv5GBBYoB"
-
+	relayAddrStr := "/dns4/relay-torrentium.onrender.com/tcp/443/wss/p2p/12D3KooWMbTZL5taZH4CK9hCkTLkXaPadBoMR3KJZRFhbYBPrdkK"
 	relayMaddr, err := ma.NewMultiaddr(relayAddrStr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid relay multiaddr: %w", err)
